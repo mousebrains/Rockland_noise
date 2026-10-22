@@ -13,7 +13,7 @@ import numpy as np
 
 from . import checklist, health
 from .changes import Changes, Jump, Switching, neighbours
-from .compare import Comparison, FileResult
+from .compare import EXTRA_SPIKES_PER_HOUR, Comparison, FileResult
 from .spikes import MODES, SHARED_WINDOW_S
 
 TIME = "%Y-%m-%d %H:%M"
@@ -296,6 +296,15 @@ def _channel_words(cmp: Comparison, before: list[int], after: list[int], spikes:
     return f"{parts[0]} {unit}; {parts[1]}."
 
 
+def _not_alike(spikes: bool) -> str:
+    """Each channel's median and the middle file disagree by more than min_factor squared."""
+    busy = "busy" if spikes else "noisy"
+    return (f"  These two do not agree because the files differ a lot from one another: the"
+            f" channels were {busy} in different files, so no one file is typical. Look at the"
+            " table, and compare files of one kind (bench tests, casts, deployments)"
+            " separately.")
+
+
 def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
              min_factor: float) -> list[str]:
     """Plain-language description of the jumps, trends and unusual files in one ratio."""
@@ -308,19 +317,34 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         return ["  No files had enough usable data to compare."]
     y = np.array([cmp.files[i].spike_ratio_log if spikes else cmp.files[i].noise_ratio_log
                   for i in rows])
-    typical = 10 ** float(np.median(y))
+    # The middle file by ratio (the lower of the two middle ones): its numbers
+    # belong together, unlike each channel's median, which may come from
+    # different files.
+    k = int(np.argsort(y, kind="stable")[(len(rows) - 1) // 2])
+    middle = cmp.files[rows[k]]
     a, b = cmp.channel_a, cmp.channel_b
+    where = f"In the middle file by {what} ratio, {_describe_file(cmp, rows[k])}"
     if spikes:
         ra, rb = _median_rates(cmp, rows)
         if ra == 0 and rb == 0:
             out.append(f"  In a typical file neither {a} nor {b} had any spikes.")
         else:
             out.append(f"  In a typical file {a} had about {rate(ra)} spikes per hour and "
-                       f"{b} about {rate(rb)}.")
-            if rb > 0 and ra > 0:
-                more, less, f = (a, b, typical) if typical >= 1 else (b, a, 1 / typical)
-                out.append(f"  So {more} had about {factor(f)} times as many spikes as {less}"
-                           f" (spike ratio {factor(typical)}).")
+                       f"{b} about {rate(rb)} (each channel's median over the {len(rows)}"
+                       " files).")
+            xa, xb = middle.a.rate_per_hour, middle.b.rate_per_hour
+            if xa == 0 and xb == 0:
+                out.append(f"  {where}, neither had spikes.")
+            elif xb == 0 or xa == 0:
+                only, x = (a, xa) if xb == 0 else (b, xb)
+                out.append(f"  {where}, only {only} had spikes ({rate(x)} per hour).")
+            else:
+                more, less, f = (a, b, xa / xb) if xa >= xb else (b, a, xb / xa)
+                out.append(f"  {where}, {a} had {rate(xa)} spikes per hour and {b} {rate(xb)}:"
+                           f" {more} had {factor(f)} times as many as {less}.")
+            unpaired = math.log10((ra + EXTRA_SPIKES_PER_HOUR) / (rb + EXTRA_SPIKES_PER_HOUR))
+            if abs(unpaired - y[k]) > 2 * math.log10(min_factor):
+                out.append(_not_alike(spikes))
         for name, ch in ((a, "a"), (b, "b")):
             if all(getattr(cmp.files[i], ch).spikes == 0 for i in rows):
                 out.append(f"  {name} had no spikes at all in any of the {len(rows)} files.")
@@ -333,7 +357,12 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
     else:
         na, nb = _median_noise(cmp, rows)
         out.append(f"  In a typical file the noise was {na:.2f} counts on {a} and {nb:.2f} on"
-                   f" {b}: a noise ratio of {typical:.2f}.")
+                   f" {b} (each channel's median over the {len(rows)} files).")
+        xa, xb = middle.a.noise, middle.b.noise
+        out.append(f"  {where}, it was {xa:.2f} counts on {a} and {xb:.2f} on {b}: a noise"
+                   f" ratio of {xa / xb:.2f}.")
+        if na > 0 and nb > 0 and abs(math.log10(na / nb) - y[k]) > 2 * math.log10(min_factor):
+            out.append(_not_alike(spikes))
         if cmp.mode == "live":
             out.append("  In live data a real probe's 'noise' includes real signal, so it rises"
                        " and falls with the water. When that signal is far above the electronic"

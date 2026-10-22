@@ -66,6 +66,12 @@ wiggle. The program counts how many start in each file.
   * SPIKE RATIO = spikes per hour on A divided by spikes per hour on B.
     "45" means A had 45 times as many spikes as B. "A only" means only A had
     any; "none" means neither did.
+  * The summary gives each channel's typical (median) number over the files,
+    and the numbers of the MIDDLE FILE: the one with as many files above it
+    as below in that ratio. The middle file's numbers belong together; the
+    two medians may come from different files. When they disagree a lot, the
+    report says so: the files are not alike (bench tests mixed with casts,
+    say), and no one file is typical.
   * To look for jumps and trends the program adds 1 spike per hour to both
     channels first, so a file where one channel had no spikes still gets a
     number. That only matters when a channel has very few spikes.

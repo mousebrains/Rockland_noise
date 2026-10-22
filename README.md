@@ -125,7 +125,8 @@ fault.
    2  RIOT_SL684_0531.p  2026-10-19 04:16    0.70     2,930         0       0    A only      3.96      3.24      1.22  A outside bench checklist
    ...
 Spikes
-  In a typical file T1_dT1 had about 1,504 spikes per hour and T2_dT2 about 0.
+  In a typical file T1_dT1 had about 1,504 spikes per hour and T2_dT2 about 0 (each channel's median over the 12 files).
+  In the middle file by spike ratio, file 9 (RIOT_SL684_0538.p, 2026-10-20 05:10 UTC), only T1_dT1 had spikes (891 per hour).
   under 1% of T1_dT1's spikes came within 0.1 s of one on T2_dT2; 87% of T2_dT2's spikes came within 0.1 s of one on T1_dT1 (about 9% would by chance at these rates).
   ...
 Bench test
