@@ -48,6 +48,7 @@ def test_finds_the_jump_and_writes_csv_and_plot(maker, tmp_path, capsys, cache):
     assert code == 0, err
     assert "==== JUMP in spike ratio" in out
     assert "JUMP between file 8 and file 9" in out
+    assert "none of 1,999 shuffles of these files gave a change this big" in out
     assert "T2_dT2 had no spikes at all" in out
     rows = list(csv.DictReader(csv_path.open()))
     assert len(rows) == 16
@@ -70,8 +71,10 @@ def test_bench_mode_fills_in_the_checklist(maker, tmp_path, capsys, cache):
                        "--mode", "bench", *cache)
     assert code == 0
     assert "Rockland Bench Test Review Checklist (V3)" in out
-    assert "T1_dT1: within" in out and "OUTSIDE the checklist in 3 of 3 files" in out
-    assert "T2_dT2: within" in out and "Within the checklist in all 3 files" in out
+    assert "T1_dT1: in a typical minute within" in out
+    assert "OUTSIDE the checklist in 3 of 3 files" in out
+    assert "T2_dT2: in a typical minute within" in out
+    assert "Within the checklist in all 3 files" in out
     assert "neither T1_dT1 nor T2_dT2 had any spikes" in out
 
 
@@ -295,3 +298,68 @@ def test_unsuitable_channels_are_pointed_out(maker, tmp_path, capsys, cache):
                        "--min-minutes", 0.1, *cache)
     assert code == 0 and "JAC_C is a 32-bit channel" in out
     assert "hit its limit" not in out  # JAC_T is unsigned: 0 to 65535, not -32768 to 32767
+
+
+def write_bench_bursts(maker, folder, t1_bursts, t2_bursts, seconds=SECONDS):
+    """Bench files; per file the burst positions (samples) on T1_dT1 and on T2_dT2."""
+    folder.mkdir(exist_ok=True)
+    n = maker.fast_samples(seconds)
+    for k, (w1, w2) in enumerate(zip(t1_bursts, t2_bursts, strict=True)):
+        channels = bench_channels(maker, seconds, seed=k)
+        channels |= {"T1_dT1": add_bursts(noise(n, 3.0, -20, seed=k), w1),
+                     "T2_dT2": add_bursts(noise(n, 3.0, -20, seed=100 + k), w2)}
+        maker.write(folder / f"BENCH_{k + 1:04d}.p", start=T0 + timedelta(hours=k),
+                    seconds=seconds, channels=channels)
+
+
+def test_shaking_is_told_from_a_faulty_channel(maker, tmp_path, capsys, cache):
+    n = maker.fast_samples(SECONDS)
+    where = [list(np.linspace(1000, n - 1000, 8).astype(int))] * 3
+    write_bench_bursts(maker, tmp_path / "shaken", where, where)  # the same moments: shaking
+    csv_path = tmp_path / "shaken.csv"
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "shaken", "--csv",
+                       csv_path, *cache)
+    assert code == 0
+    assert "100% of T1_dT1's spikes came within 0.1 s of one on T2_dT2" in out
+    assert "Both channels spiked at the same moment about 240 times per hour" in out
+    assert "may need attention" not in out
+    row = next(csv.DictReader(csv_path.open()))
+    assert (row["A_spikes_shared"], row["B_spikes_shared"], row["A_spikes_only_per_hour"]) == \
+        ("8", "8", "0.0")
+    write_bench_bursts(maker, tmp_path / "faulty", where, [[]] * 3)  # T1 alone: a fault
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "faulty", *cache)
+    assert code == 0
+    assert "0% of T1_dT1's spikes came within 0.1 s" in out
+    assert "T1_dT1 had about 240 spikes per hour that the other channel did not have" in out
+    assert "may need attention" in out and "spiked at the same moment" not in out
+
+
+def test_one_spike_in_a_short_file_is_not_unusual(maker, tmp_path, capsys, cache):
+    """1 spike in 2 minutes is 30 per hour, but one spike is easily luck."""
+    n = maker.fast_samples(SECONDS)
+    bursts = [[] for _ in range(12)]
+    bursts[6] = [n // 2]
+    write_bench_bursts(maker, tmp_path / "data", bursts, [[]] * 12)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache)
+    assert code == 0 and "UNUSUAL" not in out
+    bursts[6] = list(np.linspace(1000, n - 1000, 10).astype(int))  # 10 in 2 minutes is not luck
+    write_bench_bursts(maker, tmp_path / "data2", bursts, [[]] * 12)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data2", *cache)
+    assert code == 0 and "UNUSUAL: file 7" in out
+
+
+def test_both_noises_rising_is_called_a_change_in_the_signal(maker, tmp_path, capsys, cache):
+    """Live data: sh1 and sh2 both get far noisier (rough water); their ratio moves too."""
+    folder = tmp_path / "live"
+    folder.mkdir()
+    n = maker.fast_samples(SECONDS)
+    for k in range(16):
+        rough = k >= 8
+        sh1 = noise(n, 10.0 if rough else 1.0, seed=k)
+        sh2 = noise(n, 7.0 if rough else 1.0, seed=50 + k)
+        maker.write(folder / f"LIVE_{k + 1:04d}.p", start=T0 + timedelta(hours=k),
+                    seconds=SECONDS, channels={"sh1": sh1, "sh2": sh2})
+    code, out, _ = run(capsys, "compare", "sh1", "sh2", folder, *cache)
+    assert code == 0 and "Mode:       live" in out
+    assert "JUMP between file 8 and file 9" in out
+    assert "Both channels' noise rose together" in out and "not by itself a fault" in out

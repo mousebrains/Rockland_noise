@@ -7,6 +7,11 @@ samples, the same reading as ``rsi-tpw bench`` (the ODAS quick_bench port in
 the separate microstructure-tpw package), so a lone glitch does not fail an
 otherwise clean channel and the two programs agree.
 
+The checklist is written for a file of about a minute ("Collect a minimum 60s
+data file"). A bench file of several hours also holds handling and bumps, so
+the range is judged a minute at a time and the typical (median) minute is
+compared with the limit; the worst minute is reported alongside.
+
 Only items about one channel at a time are here. The checklist's spectra,
 accelerometer, inclinometer and EM-sensor items need ``rsi-tpw bench``,
 Zissou Essentials or the ODAS quick_bench figures.
@@ -17,7 +22,6 @@ from dataclasses import dataclass
 
 from .spikes import ChannelResult
 
-TYPICAL_PERCENT = 99.9
 MIN_FILE_SECONDS = 60  # "Collect a minimum 60s data file"
 
 

@@ -35,6 +35,12 @@ few spikes do not change the noise number.
     channels of the same kind it is normally close to 1 (healthy pairs checked
     so far were within about 10%). A ratio of 1.5 means A wiggles 50% more
     than B.
+  * In LIVE data a real probe's "noise" includes real signal (turbulence,
+    temperature changes, vibration), so it rises and falls with the water.
+    When that signal is far bigger than the electronic noise, the noise ratio
+    shows how differently the two probes respond to it, so it can change with
+    no fault at all. The report says so when both channels' noise rose (or
+    fell) together, at least 2x each, around a change.
 
 Spikes
 ------
@@ -50,12 +56,23 @@ wiggle. The program counts how many start in each file.
     counts), because real probes in water also see real things.
   * Bursts that start within 0.1 seconds of each other count as one spike.
   * The table shows SPIKES PER HOUR, so short and long files can be compared.
+  * BOTH = spikes per hour that happened on both channels at the same moment
+    (within 0.1 s of each other). A bump, shaking or real signal reaches both
+    probes at once; an electrical fault shows on one channel only. On bench
+    tests of shear probes about half of the spikes were shared; MR433's faulty
+    T1 shared 1% of its spikes with T2. The report says what share of each
+    channel's spikes were shared, and, when the channels are busy enough for
+    it to matter, how many would be shared by chance alone.
   * SPIKE RATIO = spikes per hour on A divided by spikes per hour on B.
     "45" means A had 45 times as many spikes as B. "A only" means only A had
     any; "none" means neither did.
   * To look for jumps and trends the program adds 1 spike per hour to both
     channels first, so a file where one channel had no spikes still gets a
     number. That only matters when a channel has very few spikes.
+  * The spike threshold follows the noise. When both channels' noise rises
+    many times over (rough water), fewer things count as spikes, so the
+    counts in those files cannot be compared with the others; the report
+    says so.
 
 Bench or live?  (worked out for you; --mode to choose yourself)
 ---------------------------------------------------------------
@@ -96,8 +113,16 @@ In bench mode the report also fills in the numbers for the items of Rockland's
 Bench Test Review Checklist (V3) that are about the two channels, for example
 "T1_dT1 and T2_dT2 counts are typically within +-40 counts" and "offset values
 are less than 100 counts". "Typically" means 99.9% of the samples. The
-checklist's spectra and accelerometer items need the bench figures from
-rsi-tpw bench, Zissou Essentials or the ODAS quick_bench.
+checklist is written for a file of about one minute, so a longer file is
+judged a minute at a time: the typical (median) minute must be within the
+limit, and the report also says how many minutes were over it and how bad the
+worst one was. The checklist's spectra and accelerometer items need the bench
+figures from rsi-tpw bench, Zissou Essentials or the ODAS quick_bench.
+
+In bench mode the report also warns when one channel has many spikes of its
+own (the channel, its connector or the test probe may need attention), or
+when both channels spiked together often (the instrument was bumped or
+shaken, which says nothing against either channel).
 
 Rockland's bench test instructions, in short: test probes installed; the
 instrument lying flat on something soft (open-cell foam), pressure port up;
@@ -129,8 +154,11 @@ as the same size of change.
   UNUSUAL FILE
          One file that is very different from the files on both sides of it.
          Often something happened during just that file (the instrument was
-         handled, or the file is very short). If it is the most recent file,
-         keep an eye on the next files: it may be the start of a jump.
+         handled, or the water was rough). If it is the most recent file,
+         keep an eye on the next files: it may be the start of a jump. For
+         the spike ratio, a file is only called unusual if its spike counts
+         are too many (or too few) to be luck for a file of its length, so
+         one spike in a two-minute file is not enough.
 
 To be reported, a change must be at least 2x for the spike ratio (1.25x for
 the noise ratio; both can be changed with --min-factor and
@@ -138,18 +166,29 @@ the noise ratio; both can be changed with --min-factor and
 
 "How sure" explained
 --------------------
-For a jump, the program shuffles the files into random order thousands of
-times and asks how often a change at least this big appears just by luck.
-"About 1 in 2,000 shuffles" means it would be very surprising by luck alone.
-Nothing is reported unless that chance is below 1 in 100. Files next to each
-other are usually alike, and the program allows for that, so it does not get
-over-excited by a long, slowly wandering record.
+For a jump, the program shuffles the files into random order 1,999 times and
+asks how often a change at least this big appears just by luck. "None of
+1,999 shuffles" is the surest it can say: luck would give a change this big
+less often than about 1 time in 2,000. For a trend it uses a standard test
+of steady rising or falling (Kendall's). Nothing is reported unless the
+chance is below 1 in 100. Files next to each other are usually alike, and
+the program allows for that, so it does not get over-excited by a long,
+slowly wandering record.
+
+These chances are APPROXIMATE: the allowance for similar neighbouring files
+is an estimate, and many places in the record are looked at. Treat "very
+sure" as "worth looking into", not as proof.
+
+Every file counts the same in the search for jumps and trends, however long
+it is. The size of a jump is judged from the typical (median) file on each
+side, which a few short, noisy files cannot move; files with less usable
+data than --min-minutes (default 1 minute) are left out.
 
 Some things a report cannot tell you
 ------------------------------------
   * WHY something changed. A jump says WHEN to look in the log book.
   * Whether a spike was electrical or real, in live data. Compare with the
-    partner channel: a real event usually hits both.
+    partner channel: a real event usually hits both (see BOTH above).
   * Anything about files from different instruments mixed together; the
     report warns you when that happens.
   * Jumps within the first or last 3 files: there is not enough data on one
@@ -161,6 +200,9 @@ Run with --csv results.csv --plot results.png and send both files, together
 with the report text and a note of what you were testing. The CSV has every
 number for every file, including some extra ones not shown in the table:
   *_threshold_counts            the spike threshold used for that file
+  *_spikes_shared               spikes with one on the other channel within 0.1 s
+  *_spikes_only_per_hour        spikes per hour on this channel alone
+  *_worst_minute_range_counts   the checklist range in the worst minute
   *_spikes_starting_upward_pct  % of spikes whose first swing was upward
                                 (real signal is usually about half and half;
                                 some electrical faults are almost all one way)

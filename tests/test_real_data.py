@@ -39,7 +39,8 @@ def test_same_counts_as_aem1g(name, t1, t2):
 
 
 def test_healthy_channels_have_no_bench_spikes():
-    """In a quiet 4-hour bench file, healthy channels never reach 6 x their noise."""
+    """RIOT_SL684_0511 is a quiet 4-hour bench file: its healthy channels never reach 6 x
+    their noise. (Busier bench sessions do have some, from handling; see spikes.py.)"""
     data = read_channels(TANK / "RIOT_SL684_0511.p", ["T2_dT2", "sh1", "sh2"], skip_start_s=600)
     for c in data.channels.values():
         r = analyze_channel(c.name, c.counts, c.fs, c.usable, MODES["bench"], bad=c.bad)
@@ -54,3 +55,15 @@ def test_tank_files_are_recognised_as_bench_tests():
     s = classify(data.evidence)
     assert s.probes == "test" and s.bench
     assert abs(data.evidence.t1 - data.evidence.t1_ref) < 0.05
+
+
+def test_the_t1_fault_is_on_t1_alone():
+    """MR433's T1 fault bursts are electrical: T2 shares almost none of them."""
+    from rockland_noise.spikes import SHARED_WINDOW_S, analyze_channel_times, shared_spikes
+
+    data = read_channels(TANK / "RIOT_SL684_0520.p", ["T1_dT1", "T2_dT2"], skip_start_s=600)
+    (r1, t1), (_, t2) = (analyze_channel_times(c.name, c.counts, c.fs, c.usable,
+                                               [MODES["bench"]], bad=c.bad)[0]
+                         for c in data.channels.values())
+    assert r1.spikes > 5000
+    assert shared_spikes(t1, t2, SHARED_WINDOW_S) <= 0.01 * r1.spikes

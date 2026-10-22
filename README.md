@@ -119,25 +119,32 @@ fault.
   Mode:       bench (bench test): a spike is a jump bigger than 6 times the channel's noise (and at least 5 counts)
               Why: T1 and T2 read their steady reference temperature (test probes) and the instrument stayed at the surface in 12 of 12 files.
 
-                                                   ------spikes per hour-------  -------noise (counts)-------
-   #  P-file             Start (UTC)        Hours    T1_dT1    T2_dT2       A/B    T1_dT1    T2_dT2       A/B  Notes
-   2  RIOT_SL684_0531.p  2026-10-19 04:16    0.70     2,930         0    A only      3.96      3.24      1.22  A outside bench checklist
-   3  RIOT_SL684_0532.p  2026-10-19 05:11    4.00       635         0    A only      6.24      3.23      1.93  A outside bench checklist
+                                                   ----------spikes per hour-----------  -------noise (counts)-------
+   #  P-file             Start (UTC)        Hours    T1_dT1    T2_dT2    both       A/B    T1_dT1    T2_dT2       A/B  Notes
+   1  RIOT_SL684_0530.p  2026-10-19 00:16    4.00     1,171        36      36        33      3.55      3.24      1.09  unusual noise ratio; unusual spike ratio
+   2  RIOT_SL684_0531.p  2026-10-19 04:16    0.70     2,930         0       0    A only      3.96      3.24      1.22  A outside bench checklist
    ...
 Spikes
   In a typical file T1_dT1 had about 1,504 spikes per hour and T2_dT2 about 0.
+  under 1% of T1_dT1's spikes came within 0.1 s of one on T2_dT2; 87% of T2_dT2's spikes came within 0.1 s of one on T1_dT1 (about 9% would by chance at these rates).
+  ...
 Bench test
-  T1_dT1 had about 1,504 spikes per hour in a typical file. With test probes on a quiet
-  bench a healthy channel has none, or a few from bumps. ...
+  T1_dT1 had about 1,504 spikes per hour that the other channel did not have, in a typical file. With test
+  probes on a quiet bench a healthy channel has few or none, so the channel, its connector or the test probe may need attention.
 Rockland Bench Test Review Checklist (V3): items about these two channels
   "T1_dT1 and T2_dT2 counts are typically within +-40 counts, and their offsets are less than 100 counts."
-    T1_dT1: within +-38 to +-315 counts, offset -17 to 153 counts.
-      OUTSIDE the checklist in 11 of 12 files (#1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12).
-    T2_dT2: within +-11 to +-11 counts, offset -26 to -20 counts.
+    T1_dT1: in a typical minute within +-18 to +-111 counts, offset -17 to 153 counts.
+      1,263 of 2,529 minutes (50%) were over +-40; the worst was +-1,323 counts (file #5).
+      OUTSIDE the checklist in 6 of 12 files (#2, 3, 4, 5, 6, 12).
+    T2_dT2: in a typical minute within +-11 to +-11 counts, offset -26 to -20 counts.
+      5 of 2,529 minutes (under 1%) were over +-40; the worst was +-555 counts (file #1).
       Within the checklist in all 12 files.
 ```
 
 * **Spikes per hour**: sudden short bursts, counted per hour of data.
+* **both**: spikes per hour that happened on both channels at the same moment
+  (within 0.1 s). A bump, shaking or real signal reaches both probes; an
+  electrical fault shows on one channel only, like T1 here.
 * **Noise**: the size of the small, fast wiggle every channel has, in raw counts.
   Healthy MicroRider channels: about 3.2 counts (thermistors) and 1.1 counts (shear).
 * **A/B**: the ratio of channel A to channel B. `A only`: only A had spikes.
@@ -145,6 +152,9 @@ Rockland Bench Test Review Checklist (V3): items about these two channels
   marks where something changed. The text under **What the numbers say**
   describes each jump, trend and unusual file, which channel changed, and how
   sure the tool is.
+* **Live data**: a real probe's spikes and noise include real signal from the
+  water. When both channels' noise rises together around a change, the report
+  says so: the water or the vehicle changed, not one channel.
 
 Run `rockland-noise explain` for the full plain-language guide.
 
@@ -189,8 +199,29 @@ MR433, MR435 and MR533), as expected for Gaussian noise, so 6 × gives about one
 false spike per 250 hours of pure electronic noise. Real bench sessions also
 have mechanical spikes from handling and vibration: 27% of the healthy shear
 channel-files and 5% of the thermistor channel-files had at least one, and in
-39 of the 49 shear files with spikes both sh1 and sh2 had them. A ratio between
-the two channels is not fooled by spikes they share; the absolute counts are.
+39 of the 49 shear files with spikes both sh1 and sh2 had them.
+
+**Shared spikes**: a spike is shared when the other channel has one starting
+within 0.1 s. On the OOI SN 433 and MR435 tank bench tests 46–60% of the shear
+spikes were shared, most of them within 10 ms (chance: under 1%); MR433's
+faulty T1 shared under 1% with T2. The bench warnings use the spikes each
+channel had on its own, and single out a channel only when its own spikes
+outnumber its partner's at least 3 to 1 (shaking also gives some unshared
+spikes: 19 and 44 per hour on OOI SN 433, besides 48 per hour shared). In live
+data the report gives the share expected by chance (13% at 2,400 spikes per
+hour).
+
+**Live data**: when real signal is far above the electronic noise, the noise
+ratio in counts shows how differently the two probes respond to it, not the
+electronics. On the RIOT 2026 MR435 deployment both shear channels' noise rose
+about 10× during rough stretches and the ratio moved from 1.07 to about 1.4;
+the report marks such changes "both channels' noise rose together". (The two
+probes' setup sensitivities and gains differ by only 4%, so the setup does not
+explain the 1.4; the probes' real sensitivities, positions or vibration may.)
+
+**Bench checklist**: judged a minute at a time (the checklist is written for a
+60-s file): a file passes if its typical (median) minute is within the limit;
+the report also counts the minutes over the limit and gives the worst.
 
 **Bench or live** (`setup.py`), chosen on 1,217 files of MicroRiders (SN 330,
 429, 433, 435, 533) and VMPs (SN 132, 142, 409, 428, 465, 479), and checked on
@@ -240,7 +271,14 @@ file by file in time order:
   dropped one at a time.
 * **Unusual file**: differs from the median of its 3 neighbours on *both*
   sides, in the same direction, by at least `--min-factor`² and 4× the usual
-  file-to-file scatter.
+  file-to-file scatter. For the spike ratio, one of the file's two spike
+  counts must also be beyond chance (Poisson, below 0.001) at its neighbours'
+  rates and its own length, so a short file with a spike or two is not flagged.
+* **How sure**: the shuffle p-value for jumps (at best "none of 1,999
+  shuffles"), Kendall's test for trends. Both are approximate (the
+  neighbour-similarity allowance is an estimate) and every file counts the
+  same; the jump sizes are judged on medians, which short noisy files cannot
+  move.
 * To compare spike rates when one channel has none, 1 spike per hour is added
   to both rates before the ratio is taken for jump and trend detection.
 

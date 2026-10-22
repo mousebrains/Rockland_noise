@@ -112,3 +112,17 @@ def test_min_factor_sets_what_is_worth_reporting():
     y = NOISE + np.where(STEP >= 15, 0.4, 0)  # about x2.5
     assert find_changes(DAYS, y, ChangeSettings(min_factor=2)).jumps
     assert not find_changes(DAYS, y, ChangeSettings(min_factor=5)).jumps
+
+
+def test_the_callers_check_can_veto_an_unusual_file():
+    y = NOISE.copy()
+    y[12] += 1.5
+    seen = []
+
+    def check(i, around, higher):
+        seen.append((i, sorted(around.tolist()), higher))
+        return False
+
+    c = find_changes(DAYS, y, check=check)
+    assert not c.unusual
+    assert seen == [(12, [9, 10, 11, 13, 14, 15], True)]

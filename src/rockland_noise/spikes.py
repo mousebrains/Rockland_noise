@@ -19,9 +19,16 @@ change: there the noise came from the median absolute deviation, which on
 whole-number counts can only take a few values (2 or 3 counts), so the
 threshold jumped by half between files. The clipped root-mean-square used here
 changes smoothly.
+
+Two channels are compared spike by spike too: a spike is SHARED when the other
+channel has one starting within 0.1 s. Shaking and bumps reach both probes at
+once; an electrical fault shows on one channel. Measured: on bench tests of
+MicroRider SN 433 and 435 (shear) 46-60% of the spikes were shared, most of
+them within 10 ms, where chance would give under 1%; MR433's faulty T1
+shared 1% with T2.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.ndimage import median_filter
@@ -31,6 +38,9 @@ from scipy.ndimage import median_filter
 # or 32-bit (JAC_C), and the reader says which.
 INT16_MIN, INT16_MAX = -32768, 32767
 MEDIAN_BLOCK = 2**20  # samples per block of the running median
+SHARED_WINDOW_S = 0.1  # spikes on the two channels this close in time are shared
+CHECKLIST_MINUTE_S = 60.0  # the checklist's "typically within" is judged per minute
+TYPICAL_PERCENT = 99.9  # "typically" = this percentage of the samples (as rsi-tpw bench)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +93,22 @@ class ChannelResult:
     bits: int = 16  # 32 for a channel made of two words (e.g. JAC_C)
     fast: bool = True  # sampled every scan (False: a slow channel)
     mean: float = float("nan")  # mean of the usable raw counts (the "offset")
-    typical_range: float = float("nan")  # 99.9% of usable samples lie within +- this of the mean
+    # The checklist's range, per minute: in a typical (median) minute 99.9% of
+    # the usable samples lie within +- typical_range of that minute's mean.
+    typical_range: float = float("nan")
+    worst_range: float = float("nan")  # the same, in the worst minute
+    minute_ranges: list[float] = field(default_factory=list)  # every minute's, in order
+    shared: int = 0  # spikes with a spike on the other channel within 0.1 s
 
     @property
     def rate_per_hour(self) -> float:
         return self.spikes / (self.usable_s / 3600) if self.usable_s > 0 else float("nan")
+
+    @property
+    def only_per_hour(self) -> float:
+        """Spikes per hour on this channel alone (not shared with the other)."""
+        return ((self.spikes - self.shared) / (self.usable_s / 3600) if self.usable_s > 0
+                else float("nan"))
 
 
 def odd_window(seconds: float, fs: float) -> int:
@@ -192,6 +213,42 @@ def spike_starts(hp: np.ndarray, usable: np.ndarray, threshold: float, fs: float
     return np.asarray(keep, dtype=np.int64)
 
 
+def shared_spikes(times: np.ndarray, other: np.ndarray, window_s: float) -> int:
+    """How many of the spike times have one of the other channel's within window_s."""
+    if times.size == 0 or other.size == 0:
+        return 0
+    i = np.searchsorted(other, times)
+    before = other[np.clip(i - 1, 0, other.size - 1)]
+    after = other[np.clip(i, 0, other.size - 1)]
+    near = (np.abs(times - before) <= window_s) | (np.abs(after - times) <= window_s)
+    return int(np.count_nonzero(near))
+
+
+def minute_ranges(counts: np.ndarray, usable: np.ndarray, fs: float,
+                  minute_s: float = CHECKLIST_MINUTE_S) -> np.ndarray:
+    """The checklist's "typically within +-N counts" for each minute of the file.
+
+    Rockland's checklist is written for a file of about a minute, so a long
+    file is judged a minute at a time: for each minute with at least half of
+    its samples usable, the range that 99.9% of them stay within, about that
+    minute's own mean. A file with no such minute is judged as a whole.
+    """
+    n = max(1, round(minute_s * fs))
+    out = []
+    for a in range(0, counts.size, n):
+        x = counts[a:a + n][usable[a:a + n]]
+        if x.size >= n / 2:
+            x = x.astype(np.float64)
+            x -= x.mean()
+            out.append(float(np.percentile(np.abs(x, out=x), TYPICAL_PERCENT)))
+    if not out:
+        x = counts[usable].astype(np.float64)
+        if x.size:
+            x -= x.mean()
+            out.append(float(np.percentile(np.abs(x, out=x), TYPICAL_PERCENT)))
+    return np.asarray(out)
+
+
 def analyze_channel(name: str, counts: np.ndarray, fs: float, usable: np.ndarray,
                     settings: SpikeSettings, bad: np.ndarray | None = None,
                     limits: tuple[int, int] | None = (INT16_MIN, INT16_MAX)) -> ChannelResult:
@@ -208,7 +265,15 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
                          settings: list[SpikeSettings], bad: np.ndarray | None = None,
                          limits: tuple[int, int] | None = (INT16_MIN, INT16_MAX),
                          ) -> list[ChannelResult]:
-    """Like analyze_channel for several settings at once (e.g. bench and live).
+    """Like analyze_channel for several settings at once (e.g. bench and live)."""
+    return [r for r, _ in analyze_channel_times(name, counts, fs, usable, settings, bad, limits)]
+
+
+def analyze_channel_times(name: str, counts: np.ndarray, fs: float, usable: np.ndarray,
+                          settings: list[SpikeSettings], bad: np.ndarray | None = None,
+                          limits: tuple[int, int] | None = (INT16_MIN, INT16_MAX),
+                          ) -> list[tuple[ChannelResult, np.ndarray]]:
+    """analyze_channel_many, and also when each spike started (seconds into the file).
 
     The slow part, the running median, is done once per window length.
     """
@@ -226,16 +291,14 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
     saturated = 0 if limits is None else int(np.count_nonzero(
         ((counts <= limits[0]) | (counts >= limits[1])) & usable))
 
-    # The bench-test checklist's numbers: offset, and the range that 99.9% of
-    # the samples stay within (see checklist.py).
-    raw = counts[usable].astype(np.float64)
-    mean = float(np.mean(raw)) if raw.size else float("nan")
-    if raw.size:
-        raw -= mean
-        typical_range = float(np.percentile(np.abs(raw, out=raw), 99.9))
-    else:
-        typical_range = float("nan")
-    del raw
+    # The bench-test checklist's numbers (see checklist.py): the offset (mean),
+    # and per minute the range that 99.9% of the samples stay within.
+    n_usable = int(np.count_nonzero(usable))
+    mean = (float(np.sum(counts, where=usable, dtype=np.float64) / n_usable) if n_usable
+            else float("nan"))
+    ranges = minute_ranges(counts, usable, fs)
+    typical_range = float(np.median(ranges)) if ranges.size else float("nan")
+    worst_range = float(np.max(ranges)) if ranges.size else float("nan")
 
     # Per running-median length: the fast part, its noise, its largest value
     # and how many samples were usable.
@@ -257,13 +320,14 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
             threshold = float("nan")
 
         if n_used == 0 or not np.isfinite(threshold):
-            results.append(ChannelResult(name, 0.0, float("nan"), threshold, 0, 0, float("nan"),
-                                         float("nan"), saturated, bad_buffer_samples, fs=fs))
+            results.append((ChannelResult(name, 0.0, float("nan"), threshold, 0, 0, float("nan"),
+                                          float("nan"), saturated, bad_buffer_samples, fs=fs),
+                            np.empty(0)))
             continue
         starts = spike_starts(hp, usable, threshold, fs, setting.merge_s)
         span = max(1, round(setting.amplitude_s * fs))
         amplitudes = [float(np.max(np.abs(hp[i:i + span]))) for i in starts]
-        results.append(ChannelResult(
+        results.append((ChannelResult(
             name=name,
             usable_s=float(n_used / fs),
             noise=noise,
@@ -276,6 +340,8 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
             bad_buffer_samples=bad_buffer_samples,
             mean=mean,
             typical_range=typical_range,
+            worst_range=worst_range,
+            minute_ranges=[round(float(x), 1) for x in ranges],
             fs=fs,
-        ))
+        ), starts / fs))
     return results

@@ -5,7 +5,14 @@ import pytest
 from scipy.ndimage import median_filter
 
 from rockland_noise import spikes
-from rockland_noise.spikes import MODES, SpikeSettings, analyze_channel, noise_level
+from rockland_noise.spikes import (
+    MODES,
+    SpikeSettings,
+    analyze_channel,
+    minute_ranges,
+    noise_level,
+    shared_spikes,
+)
 
 from .conftest import add_bursts, noise
 
@@ -119,10 +126,29 @@ def test_fixed_threshold_and_floor():
 
 def test_checklist_numbers():
     x = counts(noise(TEN_MIN, 3.0, offset=-25, seed=11))
+    x[int(300 * FS):int(310 * FS)] += 200  # one bumped minute
     r = analyze_channel("T1_dT1", x, FS, np.ones(x.size, bool), MODES["bench"])
-    assert r.mean == pytest.approx(-25, abs=0.1)
-    # 99.9% of a normal distribution lies within 3.29 standard deviations.
+    assert r.mean == pytest.approx(-25 + 200 * 10 / 600, abs=0.1)
+    # 99.9% of a normal distribution lies within 3.29 standard deviations:
+    # that is the typical minute; the bumped one is the worst.
     assert r.typical_range == pytest.approx(3.29 * 3.0, rel=0.05)
+    assert len(r.minute_ranges) == 10 and r.worst_range > 150
+
+
+def test_minute_ranges_use_only_usable_minutes():
+    x = counts(noise(TEN_MIN, 3.0, seed=15))
+    usable = np.ones(x.size, bool)
+    usable[: int(90 * FS)] = False  # the first minute and a half are not usable
+    assert minute_ranges(x, usable, FS).size == 9  # the second minute is half usable
+    assert minute_ranges(x[:1000], np.ones(1000, bool), FS).size == 1  # short: one range
+
+
+def test_shared_spikes():
+    a = np.array([1.0, 5.0, 9.0, 20.0])
+    b = np.array([1.05, 9.2, 19.95])
+    assert shared_spikes(a, b, 0.1) == 2  # 1.0 and 20.0
+    assert shared_spikes(b, a, 0.1) == 2  # 1.05 and 19.95
+    assert shared_spikes(a, np.empty(0), 0.1) == 0
 
 
 def test_running_median_in_blocks_is_exact(monkeypatch):
