@@ -49,10 +49,19 @@ WORD = {
 # dropouts are 63-64 samples long and chance hits 1-2).
 BAD_BUFFER_VALUE = -32753
 BAD_BUFFER_MIN_RUN = 4
+# Header values outside these ranges are kept, with a note: a damaged header
+# word can give a wrong sample rate or date without making the file unreadable.
+USUAL_FAST_RATE = (100.0, 2100.0)  # Hz; Rockland instruments sample at 512 or 1024
+USUAL_YEARS = (2000, 2100)
+READ_CHUNK_BYTES = 8 * 2**20  # records are read this much at a time
 
 
 class PFileError(Exception):
     """The file is not a P-file this program can read."""
+
+
+class EmptyPFileError(PFileError):
+    """The file holds no data: it is empty, or has only its header and setup."""
 
 
 @dataclass(slots=True)
@@ -156,12 +165,17 @@ class PFile:
         self.path = Path(self.path)
         with open(self.path, "rb") as f:
             head = f.read(HEADER_BYTES)
+            if not head:
+                raise EmptyPFileError("the file is empty (0 bytes)")
             if len(head) < HEADER_BYTES:
                 raise PFileError("the file is too small to be a P-file")
             self.endian = self._endian(head)
             words = struct.unpack(f"{self.endian}64H", head)
             self.header = {name: words[i] for name, i in WORD.items()}
             version = self.header["header_version"]
+            if sum(w != 0 for w in words) <= 2:
+                raise PFileError("the header is blank (nearly all zeros), so the file was"
+                                 " probably never finished, e.g. the power went off")
             if version == 1:
                 raise PFileError("this is an old (pre-2015) format-1 P-file, which keeps its"
                                  " setup in a separate file; it is not supported")
@@ -174,7 +188,8 @@ class PFile:
         self.config = parse_config(text)
         self._geometry(file_size)
         self._setups = self._channel_setups()
-        self._records = None
+        self._words: dict[int, np.ndarray] = {}  # matrix address -> its samples
+        self._checked = False
 
     # --- header and layout -------------------------------------------------
 
@@ -218,9 +233,14 @@ class PFile:
         self.scans_per_record = scans
         self.n_records = (file_size - self.first_record) // self.record_size
         if self.n_records < 1:
-            raise PFileError("the file has no data records")
+            raise EmptyPFileError("the file has its header and setup but no data (the"
+                                  " instrument probably stopped right after it started)")
         if (file_size - self.first_record) % self.record_size:
             self.notes.append("the file ends with a partial record, which was ignored")
+        lo, hi = USUAL_FAST_RATE
+        if not lo <= self.fs_fast <= hi:
+            self.notes.append(f"the header gives a sample rate of {self.fs_fast:,.1f} per second,"
+                              f" outside the usual {lo:g} to {hi:g}: the header may be damaged")
 
         tz = h["timezone_min"] - 2**16 if h["timezone_min"] >= 2**15 else h["timezone_min"]
         try:
@@ -229,6 +249,10 @@ class PFile:
                              tzinfo=timezone(timedelta(minutes=tz)))
         except ValueError as ex:
             raise PFileError(f"the header has no valid date and time ({ex})") from None
+        if not USUAL_YEARS[0] <= h["year"] <= USUAL_YEARS[1]:
+            self.notes.append(f"the header's date ({h['year']}-{h['month']:02d}-{h['day']:02d})"
+                              " looks wrong: the instrument's clock may not have been set, so"
+                              " the time order of the files may be wrong")
         # The header time marks the END of the first record (ODAS odas_p2mat.m).
         root = self.config.get("root", {})
         recsize = root.get("recsize", root.get("recordduration", "1"))
@@ -291,46 +315,91 @@ class PFile:
 
     # --- samples -------------------------------------------------------------
 
-    def _data(self) -> np.ndarray:
-        """All data records as (records, words), read once."""
-        if self._records is None:
-            dtype = np.dtype([("hdr", f"{self.endian}u2", (self.header['header_size'] // 2,)),
-                              ("data", f"{self.endian}i2", (self.data_words,))])
-            with open(self.path, "rb") as f:
-                f.seek(self.first_record)
-                records = np.fromfile(f, dtype=dtype, count=self.n_records)
-            self._records = records
-            self._check_record_headers(records["hdr"])
-        return self._records["data"]
+    def load(self, names: list[str]) -> None:
+        """Read these channels' samples in one pass through the file.
 
-    def _check_record_headers(self, headers: np.ndarray) -> None:
-        numbers = headers[:, WORD["record_number"]].astype(np.int64)
+        Only the requested matrix addresses are kept (16-bit integers), and the
+        file is read a few megabytes at a time, so a long file never has to fit
+        in memory as a whole. Channels not loaded here are read when asked for.
+        """
+        wanted = sorted({i for n in names for i in self._setups[n].ids} - set(self._words))
+        if not wanted and self._checked:
+            return
+        cycle = self.n_rows * self.n_cols
+        where = {}  # address -> (first word in a record, step between its samples)
+        for ch_id in wanted:
+            rows, cols = np.nonzero(self.matrix == ch_id)
+            col = int(cols[0])
+            if np.all(self.matrix[:, col] == ch_id):  # fast: the whole column
+                where[ch_id] = (col, self.n_cols)
+            else:  # slow: first cell, once per matrix cycle
+                where[ch_id] = (int(rows[0]) * self.n_cols + col, cycle)
+        out = {i: np.empty(self.n_records * (self.data_words // step), dtype=np.int16)
+               for i, (_, step) in where.items()}
+        numbers = np.empty(self.n_records, dtype=np.int64)
+        status = np.empty(self.n_records, dtype=np.int64)
+        dtype = np.dtype([("hdr", f"{self.endian}u2", (self.header["header_size"] // 2,)),
+                          ("data", f"{self.endian}i2", (self.data_words,))])
+        chunk = max(1, READ_CHUNK_BYTES // self.record_size)
+        with open(self.path, "rb") as f:
+            f.seek(self.first_record)
+            done = 0
+            while done < self.n_records:
+                records = np.fromfile(f, dtype=dtype, count=min(chunk, self.n_records - done))
+                if records.size == 0:
+                    raise PFileError("the file became shorter while it was being read")
+                k = records.size
+                numbers[done:done + k] = records["hdr"][:, WORD["record_number"]]
+                status[done:done + k] = records["hdr"][:, WORD["buffer_status"]]
+                data = records["data"]
+                for ch_id, (first, step) in where.items():
+                    per = self.data_words // step
+                    out[ch_id][done * per:(done + k) * per].reshape(k, per)[:] = \
+                        data[:, first::step]
+                done += k
+        self._words.update(out)
+        if not self._checked:
+            self._check_record_headers(numbers, status)
+            self._checked = True
+
+    def _check_record_headers(self, numbers: np.ndarray, status: np.ndarray) -> None:
         steps = np.diff(numbers)
         gaps = steps > 1
         if gaps.any():
             self.notes.append(f"{int(steps[gaps].sum() - gaps.sum())} record(s) are missing from"
                               " the file; later times are shifted earlier")
         if self.header["header_version"] >> 8 == 6 and self.header["header_version"] & 255 == 0:
-            flagged = int(np.count_nonzero(headers[:, WORD["buffer_status"]]))
+            flagged = int(np.count_nonzero(status))
             if flagged:
                 self.notes.append(f"{flagged} record(s) are flagged as bad by the logger")
 
     def _word_series(self, ch_id: int) -> np.ndarray:
         """One matrix address's samples in time order, as 16-bit integers."""
-        rows, cols = np.nonzero(self.matrix == ch_id)
-        col = int(cols[0])
-        data = self._data()
-        if np.all(self.matrix[:, col] == ch_id):  # fast: the whole column
-            return data[:, col::self.n_cols].reshape(-1)
-        start = int(rows[0]) * self.n_cols + col  # slow: first cell, once per cycle
-        return data[:, start::self.n_rows * self.n_cols].reshape(-1)
+        if ch_id not in self._words:
+            self.load([n for n, s in self._setups.items() if ch_id in s.ids][:1])
+        return self._words[ch_id]
+
+    @staticmethod
+    def _unsigned(s: ChannelSetup) -> bool:
+        return s.params.get("sign", "").strip().lower() == "unsigned" or s.type == "jac_t"
+
+    def bits(self, name: str) -> int:
+        """16 for an ordinary channel, 32 for one made of two words (e.g. JAC_C)."""
+        return 16 * len(self._setups[name].ids)
+
+    def limits(self, name: str) -> tuple[int, int] | None:
+        """The smallest and largest count a 16-bit channel can record; None for 32-bit."""
+        s = self._setups[name]
+        if len(s.ids) != 1:
+            return None
+        return (0, 2**16 - 1) if self._unsigned(s) else (-(2**15), 2**15 - 1)
 
     def raw(self, name: str) -> np.ndarray:
         """Raw counts, as the ODAS MATLAB library reads them (read_odas.m)."""
         s = self._setups[name]
         if len(s.ids) == 1:
             x = self._word_series(s.ids[0]).astype(np.int32)
-            if s.params.get("sign", "").strip().lower() == "unsigned" or s.type == "jac_t":
+            if self._unsigned(s):
                 x[x < 0] += 2**16
             return x
         # A 32-bit value from two words: the first id listed is the low word.

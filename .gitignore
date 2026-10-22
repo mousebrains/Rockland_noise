@@ -12,10 +12,10 @@ dist/
 htmlcov/
 
 # Data and outputs: P-files are large and belong with the instrument data, not
-# here. The one small template file used by the tests is tracked explicitly.
+# here. The small test files (a few records each) are tracked explicitly.
 *.p
 *.P
-!tests/data/MR_SL435_template.p
+!tests/data/*.p
 *.csv
 *.png
 
