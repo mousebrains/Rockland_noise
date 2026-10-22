@@ -153,9 +153,14 @@ Run `rockland-noise explain` for the full plain-language guide.
 | You see | What to do |
 |---|---|
 | `There is no channel called 'T1'` | Run `rockland-noise channels FILE` and copy a name from the list. The tool suggests close matches. |
-| `looks like a file, not a channel` | Put the two channel names **before** the files. |
+| `looks like a file or folder, not a channel` | Put the two channel names **before** the files. |
+| `'T1_dT1' is not a number` | An option such as `--threshold-counts` came before the channel names. Put the channel names and files first, then the options. |
 | `No .p files in folder` | Check the folder, or add `--recursive` if the files are in sub-folders. |
 | `PROBLEM: Could not read this file` | That file is damaged or not a P-file. The other files are still analysed. |
+| `PROBLEM: Empty file` | The instrument wrote the file's header but no data (it usually stopped right after it started). Nothing to analyse; the other files are still used. |
+| `--min-pressure needs a pressure channel (P)` | That file has no pressure. Leave out `--min-pressure`; a bench test does not need it. |
+| `WARNING: ... is a slow channel` or `a 32-bit channel` | Spikes and noise are meant for the fast channels: `T1_dT1`/`T2_dT2` or `sh1`/`sh2`. |
+| `... could not be converted ..., so it was not used to tell a bench test from live data` (CSV notes) | A calibration coefficient in that file's setup is unreadable (for example `0,0687` with a comma). The two channels are still analysed; check the setup, or choose `--mode` yourself. |
 | `too little usable data, left out` | The file has less than a minute of usable data (change with `--min-minutes`). With `--min-pressure`, the instrument may never have gone that deep. |
 | A long run was stopped | Run the same command again. Finished files are remembered and not read again. |
 | `rockland-noise: command not found` | Open a new terminal window after installing uv, or run `uv tool update-shell`. |
@@ -251,12 +256,18 @@ The P-file reader (`pfile.py`) follows Rockland's Technical Note 051 and the
 ODAS MATLAB library. It was checked sample for sample against
 [microstructure-tpw](https://github.com/mousebrains/turbulence)'s reader on 23
 files (MicroRiders and VMPs, formats 6.0–6.3, 512 and 1024 Hz, 32-bit channels,
-real bad-buffer runs); `tests/test_pfile.py` pins reference values from it. It
-converts to physical units only pressure, thermistor, inclinometer and JAC_T
-channels; everything else stays in counts. The tests build small P-files from
-`tests/data/MR_SL435_template.p`, a 20-s MicroRider file from
-microstructure-tpw's test data, with synthetic counts written into chosen
-channels. `tests/test_real_data.py` checks agreement with AEM1-G
-when the AEM1-G tank files are present (`ROCKLAND_NOISE_AEM1G=/path/to/Tank_Test`).
+real bad-buffer runs). `tests/test_pfile.py` pins reference values from it for
+four small real files in `tests/data/`, a few records each: a MicroRider at
+format 6.3 and 512 Hz; a MicroRider at format 6.0 and 1024 Hz; a VMP with a
+32-bit channel (JAC_C), unsigned channels (JAC_T, Chlorophyll, Turbidity) and a
+real dropout; and a VMP with test probes on a ship's deck. The reader converts
+to physical units only pressure, thermistor, inclinometer and JAC_T channels;
+everything else stays in counts. It reads only the channels it needs, a few
+megabytes of the file at a time; analysing a 4-hour, 512 Hz file needs about
+230 MB of working data.
+The other tests build small P-files from `tests/data/MR_SL435_template.p` with
+synthetic counts written into chosen channels. `tests/test_real_data.py` checks
+agreement with AEM1-G when the AEM1-G tank files are present
+(`ROCKLAND_NOISE_AEM1G=/path/to/Tank_Test`).
 
 License: GPL-3.0-or-later.

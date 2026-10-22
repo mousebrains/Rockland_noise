@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from .changes import Changes, ChangeSettings, find_changes
-from .reader import ChannelNotFoundError, Evidence, PFileReadError, read_channels
+from .reader import ChannelNotFoundError, Evidence, NoPressureError, PFileReadError, read_channels
 from .setup import Setup, classify, run_mode
 from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
 
@@ -32,7 +32,7 @@ from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
 # channel has a few spikes per hour or fewer. (AEM1-G clipped rates at 1/h.)
 EXTRA_SPIKES_PER_HOUR = 1.0
 WILDCARDS = set("*?[")
-CACHE_FORMAT = 5  # bump when ChannelResult or its meaning changes, so old answers are not reused
+CACHE_FORMAT = 6  # bump when ChannelResult or its meaning changes, so old answers are not reused
 
 
 def _version(package: str) -> str:
@@ -284,8 +284,12 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
         result.error = str(ex).splitlines()[0]
         result.notes = [str(ex)]
         return result
+    except NoPressureError as ex:
+        result.error = str(ex)
+        return result
     except PFileReadError as ex:
-        result.error = f"Could not read this file as a P-file ({ex})"
+        result.error = (f"Empty file: {ex}" if ex.empty
+                        else f"Could not read this file as a P-file ({ex})")
         return result
     except (OSError, MemoryError) as ex:
         result.error = f"Could not read the file: {ex}"
@@ -303,9 +307,10 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
     for slot, requested in enumerate((channel_a, channel_b)):
         ch = data.channels[data.resolved[requested]]
         results = analyze_channel_many(ch.name, ch.counts, ch.fs, ch.usable,
-                                       [options.spike[m][slot] for m in modes], bad=ch.bad)
+                                       [options.spike[m][slot] for m in modes], bad=ch.bad,
+                                       limits=ch.limits)
         for mode, res in zip(modes, results, strict=True):
-            res.kind = ch.kind
+            res.kind, res.bits, res.fast = ch.kind, ch.bits, ch.fast
             cache.put(keys[(mode, slot)], {"file": meta, "channel": asdict(res)})
         per_slot.append(results)
     result.by_mode = {m: (per_slot[0][i], per_slot[1][i]) for i, m in enumerate(modes)}

@@ -8,7 +8,7 @@ import pytest
 
 from rockland_noise.cli import main
 
-from .conftest import T0, add_bursts, bench_channels, noise
+from .conftest import DATA, T0, add_bursts, bench_channels, noise
 
 SECONDS = 120  # each test file is two minutes long
 
@@ -100,6 +100,8 @@ def test_unknown_channel_suggests_the_right_one(maker, tmp_path, capsys, cache):
 
 def test_files_given_where_channels_belong(tmp_path, capsys):
     code, _, err = run(capsys, "compare", "a.p", "b.p", tmp_path)
+    assert code == 1 and "looks like a file" in err
+    code, _, err = run(capsys, "compare", "data/", "T1_dT1", tmp_path)
     assert code == 1 and "looks like a file" in err
 
 
@@ -210,3 +212,62 @@ def test_bad_temperature_electronics_on_one_channel(maker, tmp_path, capsys, cac
     assert code == 0
     assert "Mode:       bench" in out
     assert "Temperature channels" in out and "T2 is unsteady" in out and "3 file(s)" in out
+
+
+def test_a_damaged_coefficient_elsewhere_does_not_lose_the_file(maker, tmp_path, capsys, cache):
+    """A decimal comma in P's calibration: sh1 vs sh2 is still analysed, with a note."""
+    path = write_set(maker, tmp_path / "data", [0])[0]
+    raw = path.read_bytes()
+    assert raw.count(b"coef1       = 0.058512") == 1
+    path.write_bytes(raw.replace(b"coef1       = 0.058512", b"coef1       = 0,058512"))
+    csv_path = tmp_path / "out.csv"
+    code, _, err = run(capsys, "compare", "sh1", "sh2", path, "--csv", csv_path, *cache)
+    assert code == 0, err
+    row = next(csv.DictReader(csv_path.open()))
+    assert row["analysed"] == "yes" and "P could not be converted" in row["notes"]
+    # ...but a pressure limit needs the pressure, so then the file cannot be used.
+    code, _, err = run(capsys, "compare", "sh1", "sh2", path, "--min-pressure", 5, "-q", *cache)
+    assert code == 1 and "--min-pressure needs the pressure" in err
+
+
+def test_quiet_still_says_why_no_file_could_be_used(tmp_path, capsys, cache):
+    (tmp_path / "a.p").write_bytes(b"not a P-file at all, but long enough to have a header" * 3)
+    (tmp_path / "b.p").write_bytes(b"")
+    code, out, err = run(capsys, "compare", "sh1", "sh2", tmp_path, "-q", *cache)
+    assert code == 1 and not out
+    assert "a.p: Could not read this file" in err and "b.p: Empty file" in err
+
+
+def test_option_before_the_channels(capsys):
+    with pytest.raises(SystemExit):
+        main(["compare", "--threshold-counts", "23.7", "T1_dT1", "T2_dT2", "data/"])
+    err = capsys.readouterr().err
+    assert "'T1_dT1' is not a number" in err and "channel names and the files first" in err
+
+
+def test_min_pressure_on_a_file_without_pressure(maker, tmp_path, capsys, cache):
+    path = write_set(maker, tmp_path / "data", [0])[0]
+    raw = path.read_bytes()
+    path.write_bytes(raw.replace(b"name        = P\r\n", b"name        = Q\r\n"))
+    code, _, err = run(capsys, "compare", "sh1", "sh2", path, "--min-pressure", 5, *cache)
+    assert code == 1 and "needs a pressure channel (P)" in err
+
+
+def test_a_channel_named_like_a_folder_here(maker, tmp_path, capsys, cache, monkeypatch):
+    write_set(maker, tmp_path / "data", [0, 0])
+    (tmp_path / "sh1").mkdir()
+    monkeypatch.chdir(tmp_path)
+    code, _, err = run(capsys, "compare", "sh1", "sh2", "data", *cache)
+    assert code == 0, err
+    code, _, err = run(capsys, "compare", "data", "sh2", "data", *cache)
+    assert code == 1 and "also the name of a file or folder here" in err
+
+
+def test_unsuitable_channels_are_pointed_out(maker, tmp_path, capsys, cache):
+    write_set(maker, tmp_path / "data", [0, 0])
+    code, out, _ = run(capsys, "compare", "Incl_X", "Incl_Y", tmp_path / "data", *cache)
+    assert code == 0 and "Incl_X is a slow channel (64 samples per second)" in out
+    code, out, _ = run(capsys, "compare", "JAC_C", "JAC_T", DATA / "VMP_SN479_dropout.p",
+                       "--min-minutes", 0.1, *cache)
+    assert code == 0 and "JAC_C is a 32-bit channel" in out
+    assert "hit its limit" not in out  # JAC_T is unsigned: 0 to 65535, not -32768 to 32767

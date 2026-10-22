@@ -18,6 +18,7 @@ from .spikes import MODES
 
 TIME = "%Y-%m-%d %H:%M"
 BENCH_BUSY_PER_HOUR = 10.0  # a typical rate above this on the bench gets a warning
+COARSE_NOISE = 0.5  # counts: below this a channel is mostly whole-count steps
 
 
 # --- formatting helpers ----------------------------------------------------------
@@ -360,6 +361,30 @@ def mode_line(cmp: Comparison) -> str:
     return f"{cmp.mode} ({kind}{custom}): {rule}"
 
 
+def channel_warnings(cmp: Comparison) -> list[str]:
+    """Warnings about channels this kind of analysis does not suit."""
+    good = [f for f in cmp.files if not f.error and f.a is not None]
+    out = []
+    for slot, name in (("a", cmp.channel_a), ("b", cmp.channel_b)):
+        results = [getattr(f, slot) for f in good]
+        if not results:
+            continue
+        ch = results[0]
+        if ch.bits == 32:
+            out.append(f"WARNING: {name} is a 32-bit channel (a counter or a frequency, such as"
+                       " JAC_C), not a voltage. Its spikes and noise in counts mean little.")
+        elif not ch.fast:
+            out.append(f"WARNING: {name} is a slow channel ({ch.fs:.0f} samples per second)."
+                       " This program is made for the fast channels (T1_dT1, T2_dT2, sh1, sh2);"
+                       " on a slow channel its 'spikes' are often ordinary steps in the signal.")
+        coarse = sum(r.noise < COARSE_NOISE for r in results if math.isfinite(r.noise))
+        if coarse * 2 >= len(results):
+            out.append(f"WARNING: {name} moves in steps of whole counts with almost no noise in"
+                       f" {coarse} of {len(results)} files, so its 'spikes' are steps in the"
+                       " signal, not electrical spikes.")
+    return out
+
+
 def temperature_warnings(cmp: Comparison) -> list[str]:
     """Temperature channels that do not behave like their partner test probe."""
     found: dict[str, list[int]] = {}
@@ -460,6 +485,7 @@ def text_report(cmp: Comparison) -> str:
     if len(inst) > 1:
         lines.append("  WARNING: these files come from more than one instrument. Jumps and"
                      " trends may only reflect switching between them.")
+    lines += [f"  {w}" for w in channel_warnings(cmp)]
     span = (f"{good[0].start.strftime(TIME)} to {good[-1].start.strftime(TIME)} UTC"
             if good else "no readable files")
     unread = len(cmp.files) - len(good)
