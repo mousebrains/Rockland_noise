@@ -43,7 +43,9 @@ wiggle. The program counts how many start in each file.
 
   * In bench mode a spike must be more than 6 times the channel's noise
     (and at least 5 counts). With test probes there is no real signal, so
-    anything that big is an electrical event.
+    anything that big is either an electrical event or the instrument being
+    bumped or shaken. Shaking usually shows on both shear channels at once;
+    an electrical fault usually shows on one channel only.
   * In live mode a spike must be more than 8 times the noise (and at least 10
     counts), because real probes in water also see real things.
   * Bursts that start within 0.1 seconds of each other count as one spike.
@@ -59,10 +61,11 @@ Bench or live?  (worked out for you; --mode to choose yourself)
 ---------------------------------------------------------------
   bench  Rockland TEST PROBES are on (open-circuit shear probes and
          fixed-resistor temperature probes) and the instrument stays at the
-         surface: on a bench, on a ship's deck, or in a shallow test tank. The signal
-         should be only the electronics' own small noise, so a healthy
-         channel usually shows NO spikes at all, and the noise of matching
-         channels should be nearly equal.
+         surface: on a bench, on a ship's deck, or in a shallow test tank.
+         The signal should be only the electronics' own small noise, so a
+         healthy channel on a quiet bench shows few or no spikes (bumps and
+         shaking add some, mostly on both shear channels at once), and the
+         noise of matching channels should be nearly equal.
   live   Real probes, or an instrument in the water (deployed, or hung at
          a few metres). Real probes
          sense real things: turbulence, temperature changes, plankton hitting

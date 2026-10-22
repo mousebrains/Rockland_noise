@@ -7,6 +7,7 @@
 
 import argparse
 import dataclasses
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,9 @@ from .explain import GUIDE
 from .reader import ChannelNotFoundError, PFileReadError, list_channels
 from .report import text_report, write_csv
 from .spikes import MODES
+
+CHANNEL_NAME = re.compile(r"[A-Za-z0-9_\-]+")
+SHOW_PROBLEMS = 20  # when no file could be used, list this many reasons
 
 EXAMPLES = """\
 examples:
@@ -44,29 +48,40 @@ class FriendlyParser(argparse.ArgumentParser):
         self.exit(2, f"\nProblem: {message}\nFor help, run:  {self.prog} --help\n")
 
 
+def _number(text: str) -> float:
+    """A number, or a message that says what probably went wrong."""
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"'{text}' is not a number. Put the two channel names and the files first, then"
+            " the options, e.g.  rockland-noise compare T1_dT1 T2_dT2 data/ --threshold-counts"
+            " 20") from None
+
+
 def _positive(text: str) -> float:
-    value = float(text)
+    value = _number(text)
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be more than 0, not {text}")
     return value
 
 
 def _not_negative(text: str) -> float:
-    value = float(text)
+    value = _number(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"must be 0 or more, not {text}")
     return value
 
 
 def _factor(text: str) -> float:
-    value = float(text)
+    value = _number(text)
     if value <= 1:
         raise argparse.ArgumentTypeError(f"must be more than 1 (2 means 'twice'), not {text}")
     return value
 
 
 def _chance(text: str) -> float:
-    value = float(text)
+    value = _number(text)
     if not 0 < value < 0.5:
         raise argparse.ArgumentTypeError(f"must be between 0 and 0.5, not {text}")
     return value
@@ -104,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also save every number for every file in this spreadsheet (CSV) file")
     c.add_argument("--plot", metavar="FILE", type=Path,
                    help="also save a picture of the results (e.g. results.png or results.pdf)")
-    c.add_argument("--min-pressure", metavar="DBAR", type=float, default=None,
+    c.add_argument("--min-pressure", metavar="DBAR", type=_number, default=None,
                    help="only use data deeper than this pressure in dbar (about metres);"
                         " use for deployed data, e.g. 5")
     c.add_argument("--skip-start", metavar="SECONDS", type=_not_negative, default=0.0,
@@ -188,10 +203,12 @@ def run_compare(args: argparse.Namespace) -> int:
               " T1_dT1 T2_dT2.", file=sys.stderr)
         return 1
     for name in (args.channel_a, args.channel_b):
-        if Path(name).suffix.lower() == ".p" or Path(name).exists():
-            print(f"Problem: '{name}' looks like a file, not a channel. Give the two channel"
-                  " names first, then the files:\n  rockland-noise compare T1_dT1 T2_dT2"
-                  " data/*.p", file=sys.stderr)
+        # Channel names are letters, digits, '_' and '-' (T1_dT1, sh1, P_dP). A
+        # name ending in .p, or with a slash, dot or wildcard in it, is a path.
+        if Path(name).suffix.lower() == ".p" or not CHANNEL_NAME.fullmatch(name):
+            print(f"Problem: '{name}' looks like a file or folder, not a channel. Give the two"
+                  " channel names first, then the files:\n  rockland-noise compare T1_dT1"
+                  " T2_dT2 data/*.p", file=sys.stderr)
             return 1
 
     options = _options(args)
@@ -217,12 +234,20 @@ def run_compare(args: argparse.Namespace) -> int:
 
     good = [f for f in result.files if not f.error]
     if not good:
+        # Say why, whatever --quiet says: there is no report to read instead.
         missing = [f for f in result.files if f.notes and "There is no channel" in f.notes[0]]
         if missing:
             print(f"Problem: {missing[0].notes[0]}", file=sys.stderr)
-        else:
-            print("Problem: none of the files could be read. See the messages above.",
-                  file=sys.stderr)
+            for name in (args.channel_a, args.channel_b):
+                if Path(name).exists():
+                    print(f"('{name}' is also the name of a file or folder here. Give the two"
+                          " channel names first, then the files.)", file=sys.stderr)
+            return 1
+        print("Problem: none of the files could be used:", file=sys.stderr)
+        for f in result.files[:SHOW_PROBLEMS]:
+            print(f"  {f.path.name}: {f.error}", file=sys.stderr)
+        if len(result.files) > SHOW_PROBLEMS:
+            print(f"  ... and {len(result.files) - SHOW_PROBLEMS} more", file=sys.stderr)
         return 1
 
     print(text_report(result))

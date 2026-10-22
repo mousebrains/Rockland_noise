@@ -16,7 +16,8 @@ import pytest
 
 from rockland_noise.pfile import PFile
 
-TEMPLATE = Path(__file__).parent / "data" / "MR_SL435_template.p"
+DATA = Path(__file__).parent / "data"
+TEMPLATE = DATA / "MR_SL435_template.p"
 FS_FAST = 512.0327777777778  # the template's fast sample rate
 SCANS_PER_RECORD = 512  # one record is one second
 

@@ -18,6 +18,7 @@ from .spikes import MODES
 
 TIME = "%Y-%m-%d %H:%M"
 BENCH_BUSY_PER_HOUR = 10.0  # a typical rate above this on the bench gets a warning
+COARSE_NOISE = 0.5  # counts: below this a channel is mostly whole-count steps
 
 
 # --- formatting helpers ----------------------------------------------------------
@@ -360,6 +361,30 @@ def mode_line(cmp: Comparison) -> str:
     return f"{cmp.mode} ({kind}{custom}): {rule}"
 
 
+def channel_warnings(cmp: Comparison) -> list[str]:
+    """Warnings about channels this kind of analysis does not suit."""
+    good = [f for f in cmp.files if not f.error and f.a is not None]
+    out = []
+    for slot, name in (("a", cmp.channel_a), ("b", cmp.channel_b)):
+        results = [getattr(f, slot) for f in good]
+        if not results:
+            continue
+        ch = results[0]
+        if ch.bits == 32:
+            out.append(f"WARNING: {name} is a 32-bit channel (a counter or a frequency, such as"
+                       " JAC_C), not a voltage. Its spikes and noise in counts mean little.")
+        elif not ch.fast:
+            out.append(f"WARNING: {name} is a slow channel ({ch.fs:.0f} samples per second)."
+                       " This program is made for the fast channels (T1_dT1, T2_dT2, sh1, sh2);"
+                       " on a slow channel its 'spikes' are often ordinary steps in the signal.")
+        coarse = sum(r.noise < COARSE_NOISE for r in results if math.isfinite(r.noise))
+        if coarse * 2 >= len(results):
+            out.append(f"WARNING: {name} moves in steps of whole counts with almost no noise in"
+                       f" {coarse} of {len(results)} files, so its 'spikes' are steps in the"
+                       " signal, not electrical spikes.")
+    return out
+
+
 def temperature_warnings(cmp: Comparison) -> list[str]:
     """Temperature channels that do not behave like their partner test probe."""
     found: dict[str, list[int]] = {}
@@ -382,14 +407,15 @@ def bench_hints(cmp: Comparison) -> list[str]:
     out = []
     ra, rb = _median_rates(cmp, rows)
     for name, r in ((cmp.channel_a, ra), (cmp.channel_b, rb)):
-        # Healthy channels on MR433/MR435/MR533 showed 0 to 3 spikes per hour
-        # (the most on a patio, in air); a faulty T1 showed 600 to 3000.
+        # Healthy thermistor channels in 163 bench tests averaged 0.5 spikes per
+        # hour, shear 3.6 (up to about 90 on both shear channels at once in a
+        # shaky setting); a faulty T1 showed 600 to 3000.
         if r >= BENCH_BUSY_PER_HOUR:
             out.append(f"  {name} had about {rate(r)} spikes per hour in a typical file. With test"
-                       " probes on a quiet bench a healthy channel has none, or a few from"
-                       " bumps. First rule out bumps and handling during the test; if it is"
-                       " not that, the channel, its connector or the test probe may need"
-                       " attention.")
+                       " probes on a quiet bench a healthy channel has few or none. If the"
+                       " other channel has about as many, the instrument was probably bumped"
+                       " or shaken. If only this channel has them, the channel, its"
+                       " connector or the test probe may need attention.")
     same_kind = all(cmp.files[i].a.kind and cmp.files[i].a.kind == cmp.files[i].b.kind
                     for i in rows)
     if same_kind and cmp.noise_used:
@@ -459,6 +485,7 @@ def text_report(cmp: Comparison) -> str:
     if len(inst) > 1:
         lines.append("  WARNING: these files come from more than one instrument. Jumps and"
                      " trends may only reflect switching between them.")
+    lines += [f"  {w}" for w in channel_warnings(cmp)]
     span = (f"{good[0].start.strftime(TIME)} to {good[-1].start.strftime(TIME)} UTC"
             if good else "no readable files")
     unread = len(cmp.files) - len(good)
