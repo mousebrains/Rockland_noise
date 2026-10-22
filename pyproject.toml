@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rockland-noise"
+version = "0.1.0"
+description = "Compare spikes and noise between two channels across a set of Rockland Scientific P-files, and point out jumps and trends"
+requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+authors = [
+    { name = "Pat Welch", email = "pat@mousebrains.com" },
+]
+keywords = ["oceanography", "microstructure", "rockland", "quality control", "noise"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    # The P-file reader. Pinned below the next minor release so a change in
+    # its API cannot silently break a technician's install.
+    "microstructure-tpw>=0.4.0,<0.5",
+    "numpy>=2.0,<3",
+    "scipy>=1.12,<2",
+    "matplotlib>=3.8,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Repository = "https://github.com/mousebrains/Rockland_noise"
+Issues = "https://github.com/mousebrains/Rockland_noise/issues"
+
+[project.scripts]
+rockland-noise = "rockland_noise.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "SIM", "RUF", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
