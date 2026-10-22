@@ -180,6 +180,15 @@ def test_channels_and_explain(maker, tmp_path, capsys):
     assert code == 0 and "HOW TO READ" in out
 
 
+def test_channel_list_lines_up_long_names(capsys):
+    code, out, _ = run(capsys, "channels", DATA / "VMP_SN479_dropout.p")
+    assert code == 0
+    rows = [ln for ln in out.splitlines() if ln.startswith("  ") and ln.split()[0] != "name"]
+    assert len({ln.index(ln.split()[1]) for ln in rows}) == 1  # one column for the type
+    assert "Chlorophyll poly" in out
+    assert next(ln for ln in rows if ln.split()[0] == "Gnd").split()[-1] == "128.0"  # 2 cells
+
+
 def test_no_command_prints_help(capsys):
     code, out, _ = run(capsys)
     assert code == 0 and "compare" in out
