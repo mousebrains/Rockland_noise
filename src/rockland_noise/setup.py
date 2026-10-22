@@ -1,7 +1,8 @@
 """Tell a bench test from data taken with real probes, from the file itself.
 
-A bench test has Rockland TEST PROBES on, and the instrument is not being
-deployed. Both show in the data.
+A bench test has Rockland TEST PROBES on, and the instrument stays at the
+surface: on a bench, on a ship's deck, or in a shallow test tank. Both show in
+the data.
 
 Test probes
     The temperature test probe is a fixed resistor equal to the thermistor
@@ -15,12 +16,16 @@ Test probes
     channel-files with real probes, from gliders, moorings and profilers,
     came within 0.5 deg C of T_0 while steady.
 
-Not deployed
-    The pressure stays put: on a bench, on a ship's deck or in a test tank the
-    middle 90% of the pressure readings span less than 0.5 dbar (except while
-    the instrument is handled), while a
-    profiler or a VMP used as a CTD with test probes (ARCTERX 2023 Wake) moves
-    by tens to hundreds of dbar. Tilt (Incl_X, Incl_Y) and shaking (Ax, Ay)
+At the surface
+    The pressure stays near zero and steady: 95% of the readings at most 1.2
+    dbar, and the middle half within 0.5 dbar. Bench tests read -0.9 to +0.7
+    dbar (sensor offsets and a shallow test tank) with the middle half within
+    0.12 dbar, or 0.42 on the deck of the Ocean Hunter III (ARCTERX 2023
+    Wake). Not bench tests: VMPs hung overnight at 2 to 5 m in a lagoon (1.9
+    dbar or more, and swinging with wind and ship motion), casts (a VMP used
+    as a CTD with test probes: tens of dbar), and a file that is mostly on
+    deck but includes a cast. Handling at the start and end of a file does
+    not count. Tilt (Incl_X, Incl_Y) and shaking (Ax, Ay)
     are reported but do not decide: a bench test on a ship (Ocean Hunter III,
     ARCTERX 2023 Wake) rolls and shakes and is still a valid test of the
     temperature and shear channels. They are used only if a file has no
@@ -50,7 +55,8 @@ TEST_PROBE_MAX_SPREAD = 0.25  # deg C, middle half of the samples
 # Readings this far out mean no probe is connected (the electronics hit a limit).
 NO_PROBE_LOW, NO_PROBE_HIGH = -10.0, 50.0
 NO_PROBE_MAX_SPREAD = 0.01
-STEADY_PRESSURE = 2.0  # dbar, 5th to 95th percentile
+STEADY_PRESSURE = 0.5  # dbar, interquartile range
+AT_SURFACE = 1.2  # dbar, 95th percentile
 FOLLOWS = 0.5  # rank correlation with JAC_T that a real probe reaches...
 WATER_VARIES = 2.0  # ...whenever the water temperature varies this much, deg C
 # Only when there is no pressure channel:
@@ -61,7 +67,7 @@ STILL_SHAKE = 300.0  # counts, typical 1-s standard deviation of Ax / Ay
 @dataclass(frozen=True, slots=True)
 class Setup:
     probes: str  # "test" (at least one test probe), "real" or "unknown" (no thermistors)
-    steady: bool | None  # not deployed (pressure steady); None when nothing tells
+    steady: bool | None  # at the surface, pressure steady; None when nothing tells
     detail: str  # the evidence in a few words
     warnings: tuple[str, ...] = ()  # e.g. a temperature channel that looks faulty
 
@@ -112,9 +118,18 @@ def classify(ev: Evidence) -> Setup:
     if ev.shake > STILL_SHAKE:
         context.append(f"shaking {ev.shake:,.0f} counts")
     if not math.isnan(ev.pressure_spread):
-        steady = ev.pressure_spread <= STEADY_PRESSURE
-        word = "steady" if steady else "changing"
-        context.insert(0, f"pressure {word} ({ev.pressure_spread:,.1f} dbar range)")
+        if ev.pressure_spread > STEADY_PRESSURE:
+            steady = False
+            context.insert(0, f"pressure changing (middle half spans"
+                              f" {ev.pressure_spread:,.1f} dbar)")
+        elif not ev.pressure_high <= AT_SURFACE:
+            steady = False
+            where = (f"at {ev.pressure:,.1f} dbar" if ev.pressure > AT_SURFACE
+                     else f"down to {ev.pressure_high:,.1f} dbar")
+            context.insert(0, f"in the water {where} (hung or deployed)")
+        else:
+            steady = True
+            context.insert(0, f"pressure steady near the surface ({ev.pressure:,.1f} dbar)")
     elif not (math.isnan(ev.tilt_spread) and math.isnan(ev.shake)):
         steady = not context
     else:
@@ -139,13 +154,15 @@ def run_mode(setups: list[Setup]) -> tuple[str, str]:
                         " using live, the cautious choice. Run the two kinds separately.")
     if test == n and bench * 2 >= n:
         moved = n - bench
-        extra = (f"; in {moved} file(s) the pressure changed (deployed or handled?)"
+        extra = (f"; {moved} file(s) were in the water or moving (handled or deployed?)"
                  if moved else "")
         return "bench", (f"T1 and T2 read their steady reference temperature (test probes)"
-                         f" and the pressure stayed put in {bench} of {n} files{extra}")
+                         f" and the instrument stayed at the surface in {bench} of {n}"
+                         f" files{extra}")
     if test == n:
-        return "live", (f"test probes, but the pressure changed in {n - bench} of {n} files"
-                        " (deployed, e.g. a VMP used as a CTD?)")
+        return "live", (f"test probes, but the instrument was in the water or moving in"
+                        f" {n - bench} of {n} files (hung or deployed, e.g. a VMP used as"
+                        " a CTD?)")
     if real:
         return "live", f"real probes ({real} of {n} files)"
     return "live", "no thermistor channels to tell test probes from real ones"

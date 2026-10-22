@@ -81,17 +81,22 @@ of files, or a pattern such as `data/*.p`.
 and `Why:` lines say what it found:
 
 * **bench**: Rockland **test probes** are on (open-circuit shear,
-  fixed-resistor temperature) and the instrument is not deployed. The signal
+  fixed-resistor temperature) and the instrument stays at the surface (bench,
+  ship's deck, shallow test tank). The signal
   is only electronic noise, so the tool is more sensitive: a spike is anything
   over 6 times the noise.
-* **live**: real probes, or a deployed instrument. Real probes sense real
+* **live**: real probes, or an instrument in the water (deployed, or hung at
+  a few metres). Real probes sense real
   things in the water, so a spike must be over 8 times the noise.
 
 How it tells: a temperature test probe is a fixed resistor, so T1 or T2 reads a
 steady temperature equal to the reference temperature T₀ in the instrument's
 setup, usually 16.15 °C ("about 16.3" is the rule of thumb). And the pressure
-stays within 2 dbar. Tilt and shaking are shown but do not decide: a bench test
-on a rolling ship is still a good test of the temperature and shear channels.
+stays near zero and steady: 95% of the readings at most 1.2 dbar, the middle
+half within 0.5 dbar (so handling at the start and end of a file does not
+count). An instrument hung in the water, even at a few metres, is not a bench
+test. Tilt and shaking are shown but do not decide: a bench test on a rolling
+ship's deck is still a good test of the temperature and shear channels.
 If one temperature channel reads its T₀ and the other wanders, the file is
 still a bench test and the wandering channel is flagged (bad temperature
 electronics?); on a VMP the report says whether it follows the water
@@ -112,7 +117,7 @@ fault.
 ```
   Channels:   A = T1_dT1   B = T2_dT2
   Mode:       bench (bench test): a spike is a jump bigger than 6 times the channel's noise (and at least 5 counts)
-              Why: T1 and T2 read their steady reference temperature (test probes) and the pressure stayed put in 12 of 12 files.
+              Why: T1 and T2 read their steady reference temperature (test probes) and the instrument stayed at the surface in 12 of 12 files.
 
                                                    ------spikes per hour-------  -------noise (counts)-------
    #  P-file             Start (UTC)        Hours    T1_dT1    T2_dT2       A/B    T1_dT1    T2_dT2       A/B  Notes
@@ -184,9 +189,11 @@ measurement: on healthy MR433, MR435 and MR533 channels, in 4-hour bench tests
   real-probe channel-files came within 0.5 °C of T₀ while steady. T₀ is
   usually 16.15 °C but 7.88, 9.45, 14.27 and 16.96 °C also occur, so the test
   is against each channel's own T₀, not a fixed temperature.
-* Bench pressure varies by less than 0.5 dbar (3.9 in one file where the
-  instrument was handled); deployed profilers, including
-  ARCTERX 2023 Wake VMP casts made with test probes, by tens to hundreds.
+* Bench tests read −0.9 to +0.7 dbar (sensor offsets, shallow test tank),
+  with the middle half of the readings within 0.12 dbar, or 0.42 on the deck
+  of the Ocean Hunter III (ARCTERX 2023 Wake). VMPs hung overnight at 2–5 m in
+  that lagoon read 1.9 dbar or more; casts, including the Wake VMP casts made
+  with test probes, span tens of dbar.
 * Real probes follow JAC_T (rank correlation ≥ 0.52, median 1.00) whenever
   the water temperature varies by more than 2 °C. Incl_T, the housing
   temperature, lags the water too much to help (correlation about 0 on VMP

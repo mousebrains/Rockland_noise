@@ -58,12 +58,13 @@ wiggle. The program counts how many start in each file.
 Bench or live?  (worked out for you; --mode to choose yourself)
 ---------------------------------------------------------------
   bench  Rockland TEST PROBES are on (open-circuit shear probes and
-         fixed-resistor temperature probes) and the instrument is not being
-         deployed: on a bench, on a ship's deck, or in a test tank. The signal
+         fixed-resistor temperature probes) and the instrument stays at the
+         surface: on a bench, on a ship's deck, or in a shallow test tank. The signal
          should be only the electronics' own small noise, so a healthy
          channel usually shows NO spikes at all, and the noise of matching
          channels should be nearly equal.
-  live   Real probes, or an instrument that is being deployed. Real probes
+  live   Real probes, or an instrument in the water (deployed, or hung at
+         a few metres). Real probes
          sense real things: turbulence, temperature changes, plankton hitting
          the probe tip, vibration. Some spikes are real and expected. What
          matters most is how the two channels compare, and whether that
@@ -79,9 +80,12 @@ How the program tells them apart (the report says what it found and why):
     flagged, because it usually means bad temperature electronics. On a VMP
     the report also says whether that channel follows the water temperature
     measured by the CT sensor (JAC_T), as a real probe would.
-  * Not deployed: the pressure stays steady (within 2 dbar). Tilt and shaking
-    are shown but do not decide, because a bench test on a rolling ship is
-    still a good test of the temperature and shear channels.
+  * At the surface: the pressure stays near zero (95% of the readings at
+    most 1.2 dbar) and steady (the middle half within 0.5 dbar), so handling
+    at the start and end of a file does not count. An instrument hung in the
+    water, even at a few metres, is not a bench test. Tilt and shaking are
+    shown but do not decide, because a bench test on a rolling ship's deck
+    is still a good test of the temperature and shear channels.
   * If some files have test probes and others real probes, the program uses
     live and asks you to run the two kinds separately.
 

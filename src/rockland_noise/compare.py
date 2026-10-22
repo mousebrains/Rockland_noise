@@ -32,7 +32,7 @@ from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
 # channel has a few spikes per hour or fewer. (AEM1-G clipped rates at 1/h.)
 EXTRA_SPIKES_PER_HOUR = 1.0
 WILDCARDS = set("*?[")
-CACHE_FORMAT = 3  # bump when ChannelResult or its meaning changes, so old answers are not reused
+CACHE_FORMAT = 5  # bump when ChannelResult or its meaning changes, so old answers are not reused
 
 
 def _version(package: str) -> str:

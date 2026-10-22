@@ -174,7 +174,7 @@ def test_auto_mode_recognises_a_bench_test(maker, tmp_path, capsys, cache):
     code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "bench", *cache)
     assert code == 0
     assert "Mode:       bench" in out
-    assert "test probes" in out and "pressure stayed put in 3 of 3 files" in out
+    assert "test probes" in out and "stayed at the surface in 3 of 3 files" in out
     assert "Rockland Bench Test Review Checklist" in out
 
 

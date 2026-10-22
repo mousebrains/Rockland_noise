@@ -70,7 +70,8 @@ class Evidence:
     tilt_spread: float = float("nan")  # larger of the Incl_X and Incl_Y ranges, degrees
     shake: float = float("nan")  # larger of Ax and Ay: median over 1-s blocks of the sd, counts
     pressure: float = float("nan")  # median, dbar
-    pressure_spread: float = float("nan")  # 5th to 95th percentile, dbar
+    pressure_spread: float = float("nan")  # interquartile range, dbar
+    pressure_high: float = float("nan")  # 95th percentile, dbar
     # VMPs only: the CT sensor's temperature (JAC_T), the water temperature.
     water_spread: float = float("nan")  # 5th to 95th percentile, deg C
     t1_follows: float = float("nan")  # rank correlation of T1 with JAC_T (1-s medians)
@@ -175,7 +176,8 @@ def _evidence(pf: PFile) -> Evidence:
     p = physical("P", ("poly",))
     if p is not None:
         ev.pressure = float(np.median(p))
-        ev.pressure_spread = float(np.percentile(p, 95) - np.percentile(p, 5))
+        ev.pressure_spread = _iqr(p)
+        ev.pressure_high = float(np.percentile(p, 95))
     return ev
 
 

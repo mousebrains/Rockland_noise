@@ -9,7 +9,7 @@ NAN = math.nan
 # Numbers like those measured on the MR433 tank bench tests (T_0 = 16.151 C).
 BENCH = Evidence(t1=16.13, t2=16.13, t1_ref=16.151, t2_ref=16.151, t1_spread=0.0016,
                  t2_spread=0.0016, tilt_spread=0.025, shake=3.9, pressure=0.1,
-                 pressure_spread=0.12)
+                 pressure_spread=0.04, pressure_high=0.2)
 
 
 def with_(**changes) -> Evidence:
@@ -44,8 +44,21 @@ def test_real_probes_in_water_at_the_reference_temperature_are_not_steady():
 
 def test_test_probes_on_a_deployed_instrument_is_not_a_bench_test():
     """ARCTERX 2023 Wake: a VMP used as a CTD, with test probes."""
-    s = classify(with_(pressure_spread=124, tilt_spread=9.9, shake=131))
+    s = classify(with_(pressure=43, pressure_spread=87, pressure_high=101, tilt_spread=9.9,
+                       shake=131))
     assert s.probes == "test" and s.steady is False and not s.bench
+
+
+def test_hung_in_the_water_is_not_a_bench_test():
+    """Ocean Hunter III: VMPs hung overnight at 2-5 m in a lagoon, with test probes."""
+    s = classify(with_(pressure=3.6, pressure_spread=0.0, pressure_high=3.7))
+    assert s.probes == "test" and not s.bench and "in the water at 3.6 dbar" in s.detail
+
+
+def test_mostly_on_deck_with_a_cast_is_not_a_bench_test():
+    """SN465 data_0011: the middle half on deck, but a cast to about 50 dbar."""
+    s = classify(with_(pressure=-0.4, pressure_spread=0.07, pressure_high=51.0))
+    assert not s.bench and "down to 51.0 dbar" in s.detail
 
 
 def test_one_probe_missing():
@@ -59,8 +72,9 @@ def test_a_faulty_test_probe_channel_is_still_a_test_probe():
 
 
 def test_without_pressure_tilt_and_shaking_decide():
-    assert classify(with_(pressure_spread=NAN)).bench
-    assert not classify(with_(pressure_spread=NAN, tilt_spread=20.0)).bench
+    no_p = {"pressure": NAN, "pressure_spread": NAN, "pressure_high": NAN}
+    assert classify(with_(**no_p)).bench
+    assert not classify(with_(**no_p, tilt_spread=20.0)).bench
 
 
 def test_no_thermistors():
@@ -68,11 +82,11 @@ def test_no_thermistors():
 
 
 def test_run_mode():
-    bench, moved = classify(BENCH), classify(with_(pressure_spread=4.9))
+    bench, moved = classify(BENCH), classify(with_(pressure_spread=3.3))
     real = classify(with_(t1=20.0, t2=19.0, t1_spread=2.0, t2_spread=2.0))
     assert run_mode([bench] * 10)[0] == "bench"
     mode, why = run_mode([bench] * 9 + [moved])  # handled during one file
-    assert mode == "bench" and "in 1 file(s) the pressure changed" in why
+    assert mode == "bench" and "1 file(s) were in the water or moving" in why
     assert run_mode([moved] * 5)[0] == "live"
     mode, why = run_mode([bench] * 5 + [real])
     assert mode == "live" and "separately" in why
