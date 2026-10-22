@@ -160,27 +160,36 @@ def classify(ev: Evidence) -> Setup:
 
 
 def run_mode(setups: list[Setup]) -> tuple[str, str]:
-    """The mode for a whole set of files, and why, in plain words."""
+    """The mode for a whole set of files, and why, in plain words.
+
+    Files without a thermistor reading (no T1 or T2, or no probe on either)
+    cannot be judged; the others decide, and the reason says how many could not.
+    """
     n = len(setups)
-    test = sum(s.probes == "test" for s in setups)
-    real = sum(s.probes == "real" for s in setups)
-    bench = sum(s.bench for s in setups)
+    judged = [s for s in setups if s.probes != "unknown"]
+    m = len(judged)
+    test = sum(s.probes == "test" for s in judged)
+    real = sum(s.probes == "real" for s in judged)
+    bench = sum(s.bench for s in judged)
     if n == 0:
         return "live", "no files to judge by"
+    if m == 0:
+        return "live", "no thermistor channels to tell test probes from real ones"
+    unjudged = (f"; {n - m} file(s) could not be judged (no reading from T1 or T2)"
+                if m < n else "")
     if test and real:
         return "live", (f"{test} file(s) look like test probes and {real} like real probes;"
-                        " using live, the cautious choice. Run the two kinds separately.")
-    if test == n and bench * 2 >= n:
-        moved = n - bench
+                        f" using live, the cautious choice. Run the two kinds separately"
+                        f"{unjudged}")
+    if test == m and bench * 2 >= m:
+        moved = m - bench
         extra = (f"; {moved} file(s) were in the water or moving (handled or deployed?)"
                  if moved else "")
         return "bench", (f"T1 and T2 read their steady reference temperature (test probes)"
-                         f" and the instrument stayed at the surface in {bench} of {n}"
-                         f" files{extra}")
-    if test == n:
+                         f" and the instrument stayed at the surface in {bench} of {m}"
+                         f" files{extra}{unjudged}")
+    if test == m:
         return "live", (f"test probes, but the instrument was in the water or moving in"
-                        f" {n - bench} of {n} files (hung or deployed, e.g. a VMP used as"
-                        " a CTD?)")
-    if real:
-        return "live", f"real probes ({real} of {n} files)"
-    return "live", "no thermistor channels to tell test probes from real ones"
+                        f" {m - bench} of {m} files (hung or deployed, e.g. a VMP used as"
+                        f" a CTD?){unjudged}")
+    return "live", f"real probes ({real} of {m} files){unjudged}"

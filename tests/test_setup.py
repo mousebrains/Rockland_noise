@@ -116,6 +116,22 @@ def test_run_mode():
     assert run_mode([real] * 3)[0] == "live"
 
 
+def test_run_mode_judges_on_the_files_that_can_be_judged():
+    """One file without thermistor readings must not turn a bench test into live."""
+    bench = classify(BENCH)
+    unknown = classify(with_(t1=NAN, t2=NAN, t1_spread=NAN, t2_spread=NAN))
+    mode, why = run_mode([bench] * 5 + [unknown])
+    assert mode == "bench"
+    assert "stayed at the surface in 5 of 5 files; 1 file(s) could not be judged" in why
+    real = classify(with_(t1=20.0, t2=19.0, t1_spread=2.0, t2_spread=2.0))
+    mode, why = run_mode([real] * 180 + [unknown] * 27)  # Hydrographer MR330
+    assert (mode, why) == ("live", "real probes (180 of 180 files); 27 file(s) could not be"
+                                   " judged (no reading from T1 or T2)")
+    assert run_mode([unknown] * 3) == ("live", "no thermistor channels to tell test probes from"
+                                               " real ones")
+    assert not run_mode([bench, real])[1].endswith(".")  # the report adds the full stop
+
+
 def test_one_unsteady_channel_next_to_a_test_probe_is_flagged_not_called_real():
     """Bad temperature electronics: seen on one channel at a time, with test probes on."""
     s = classify(with_(t2=17.3, t2_spread=0.8))
