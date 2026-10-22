@@ -26,8 +26,11 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import median_filter
 
-# A sample at either end of the 16-bit range means the signal was clipped.
+# A sample at either end of a channel's range means the signal was clipped.
+# Most channels are signed 16-bit; a few are unsigned (JAC_T, Turbidity, ...)
+# or 32-bit (JAC_C), and the reader says which.
 INT16_MIN, INT16_MAX = -32768, 32767
+MEDIAN_BLOCK = 2**20  # samples per block of the running median
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +76,12 @@ class ChannelResult:
     positive_first: int  # spikes whose first excursion was upward
     median_amplitude: float  # counts; NaN when there were no spikes
     largest: float  # largest |fast part|, counts
-    saturated: int  # usable samples at the end of the 16-bit range
+    saturated: int  # usable samples at either end of the channel's range
     bad_buffer_samples: int  # samples the logger marked as bad (not used)
     kind: str = ""  # sensor type from the file's setup, e.g. "therm", "shear"
+    fs: float = float("nan")  # samples per second
+    bits: int = 16  # 32 for a channel made of two words (e.g. JAC_C)
+    fast: bool = True  # sampled every scan (False: a slow channel)
     mean: float = float("nan")  # mean of the usable raw counts (the "offset")
     typical_range: float = float("nan")  # 99.9% of usable samples lie within +- this of the mean
 
@@ -90,9 +96,44 @@ def odd_window(seconds: float, fs: float) -> int:
     return max(3, n if n % 2 else n + 1)
 
 
+def running_median(x: np.ndarray, size: int) -> np.ndarray:
+    """``median_filter(x, size, mode="nearest")``, a block at a time.
+
+    Each block is filtered with half a window of its neighbours on either side,
+    so the answer is exactly the same, but a long channel needs little memory
+    (scipy works on a full-length copy of whole-number input otherwise).
+    """
+    half = size // 2
+    out = np.empty_like(x)
+    for a in range(0, x.size, MEDIAN_BLOCK):
+        b = min(x.size, a + MEDIAN_BLOCK)
+        lo, hi = max(0, a - half), min(x.size, b + half)
+        out[a:b] = median_filter(x[lo:hi], size=size, mode="nearest")[a - lo:b - lo]
+    return out
+
+
 def fast_part(counts: np.ndarray, fs: float, window_s: float) -> np.ndarray:
-    """The channel minus its running median: the noise plus any spikes."""
-    return counts - median_filter(counts, size=odd_window(window_s, fs), mode="nearest")
+    """The channel minus its running median: the noise plus any spikes.
+
+    Whole-number counts give whole numbers (the median of whole numbers is one
+    of them), kept as 32-bit integers to save memory; anything else, float64.
+    """
+    median = running_median(counts, odd_window(window_s, fs))
+    if np.issubdtype(counts.dtype, np.integer) and counts.dtype.itemsize <= 4:
+        hp = counts.astype(np.int64 if counts.dtype == np.uint32 else np.int32)
+    else:
+        hp = counts.astype(np.float64)
+    hp -= median
+    return hp
+
+
+def _median_of_histogram(values: np.ndarray, counts: np.ndarray) -> float:
+    """The median of a sample given as sorted distinct values and how often each occurs."""
+    n = int(counts.sum())
+    cum = np.cumsum(counts)
+    lower = values[np.searchsorted(cum, (n - 1) // 2 + 1)]
+    upper = values[np.searchsorted(cum, n // 2 + 1)]
+    return (float(lower) + float(upper)) / 2
 
 
 def noise_level(values: np.ndarray) -> float:
@@ -101,23 +142,45 @@ def noise_level(values: np.ndarray) -> float:
     The root-mean-square of the values within 5 times the current estimate,
     repeated three times. It starts from the median absolute deviation, which
     spikes cannot move. Returns 0 for a flat channel and NaN for no data.
+    Whole numbers are counted in a histogram first, which gives the same
+    answer with far less memory than sorting them.
     """
     if values.size == 0:
         return float("nan")
-    centred = values - np.median(values)
-    sigma = max(1.4826 * float(np.median(np.abs(centred))), 0.5)
+    if np.issubdtype(values.dtype, np.integer):
+        lo = int(values.min())
+        weights = np.bincount((values - lo).astype(np.intp, copy=False))
+        distinct = np.flatnonzero(weights)
+        weights = weights[distinct].astype(np.float64)
+        centred = distinct + lo - _median_of_histogram(distinct + lo, weights)
+    else:
+        weights = None
+        centred = values - np.median(values)
+    size = np.abs(centred)
+    if weights is None:
+        mad = float(np.median(size))
+    else:
+        order = np.argsort(size, kind="stable")
+        mad = _median_of_histogram(size[order], weights[order])
+    sigma = max(1.4826 * mad, 0.5)
     for _ in range(3):
-        kept = centred[np.abs(centred) < 5 * sigma]
-        if kept.size == 0:
-            break
-        sigma = float(np.sqrt(np.mean(kept**2)))
+        keep = size < 5 * sigma
+        if weights is None:
+            if not keep.any():
+                break
+            sigma = float(np.sqrt(np.mean(centred[keep] ** 2)))
+        else:
+            if not keep.any():
+                break
+            sigma = float(np.sqrt(np.sum(weights[keep] * centred[keep] ** 2)
+                                  / np.sum(weights[keep])))
     return sigma
 
 
 def spike_starts(hp: np.ndarray, usable: np.ndarray, threshold: float, fs: float,
                  merge_s: float) -> np.ndarray:
     """Sample numbers where spikes start, with starts closer than merge_s merged."""
-    hit = (np.abs(hp) > threshold) & usable
+    hit = ((hp > threshold) | (hp < -threshold)) & usable
     starts = np.flatnonzero(hit & ~np.concatenate(([False], hit[:-1])))
     if starts.size < 2:
         return starts
@@ -130,23 +193,26 @@ def spike_starts(hp: np.ndarray, usable: np.ndarray, threshold: float, fs: float
 
 
 def analyze_channel(name: str, counts: np.ndarray, fs: float, usable: np.ndarray,
-                    settings: SpikeSettings, bad: np.ndarray | None = None) -> ChannelResult:
+                    settings: SpikeSettings, bad: np.ndarray | None = None,
+                    limits: tuple[int, int] | None = (INT16_MIN, INT16_MAX)) -> ChannelResult:
     """Noise and spikes for one channel.
 
     ``usable`` marks the samples to count. ``bad`` marks samples the logger
-    flagged as bad; they are never counted.
+    flagged as bad; they are never counted. ``limits`` is the smallest and
+    largest count the channel can record (None: do not look for clipping).
     """
-    return analyze_channel_many(name, counts, fs, usable, [settings], bad)[0]
+    return analyze_channel_many(name, counts, fs, usable, [settings], bad, limits)[0]
 
 
 def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.ndarray,
-                         settings: list[SpikeSettings],
-                         bad: np.ndarray | None = None) -> list[ChannelResult]:
+                         settings: list[SpikeSettings], bad: np.ndarray | None = None,
+                         limits: tuple[int, int] | None = (INT16_MIN, INT16_MAX),
+                         ) -> list[ChannelResult]:
     """Like analyze_channel for several settings at once (e.g. bench and live).
 
     The slow part, the running median, is done once per window length.
     """
-    counts = np.asarray(counts, dtype=np.float64)
+    counts = np.asarray(counts)
     usable = np.asarray(usable, dtype=bool)
     bad_buffer_samples = 0 if bad is None else int(np.count_nonzero(bad))
     if bad_buffer_samples and bad_buffer_samples < counts.size:
@@ -154,26 +220,35 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
         # neighbours, so the running median is not disturbed by them. They are
         # unusable, so they are never counted themselves.
         idx = np.arange(counts.size)
-        counts = counts.copy()
+        counts = counts.astype(np.float64)
         counts[bad] = np.interp(idx[bad], idx[~bad], counts[~bad])
         usable = usable & ~bad
-    saturated = int(np.count_nonzero(((counts <= INT16_MIN) | (counts >= INT16_MAX)) & usable))
+    saturated = 0 if limits is None else int(np.count_nonzero(
+        ((counts <= limits[0]) | (counts >= limits[1])) & usable))
 
     # The bench-test checklist's numbers: offset, and the range that 99.9% of
     # the samples stay within (see checklist.py).
-    raw = counts[usable]
+    raw = counts[usable].astype(np.float64)
     mean = float(np.mean(raw)) if raw.size else float("nan")
-    typical_range = (float(np.percentile(np.abs(raw - mean), 99.9)) if raw.size
-                     else float("nan"))
+    if raw.size:
+        raw -= mean
+        typical_range = float(np.percentile(np.abs(raw, out=raw), 99.9))
+    else:
+        typical_range = float("nan")
+    del raw
 
-    prepared: dict[float, tuple[np.ndarray, np.ndarray, float]] = {}
+    # Per running-median length: the fast part, its noise, its largest value
+    # and how many samples were usable.
+    prepared: dict[float, tuple[np.ndarray, float, float, int]] = {}
     results = []
     for setting in settings:
         if setting.window_s not in prepared:
             hp = fast_part(counts, fs, setting.window_s)
             used = hp[usable]
-            prepared[setting.window_s] = (hp, used, noise_level(used))
-        hp, used, noise = prepared[setting.window_s]
+            largest = float(max(used.max(), -used.min())) if used.size else float("nan")
+            prepared[setting.window_s] = (hp, noise_level(used), largest, used.size)
+            del used
+        hp, noise, largest, n_used = prepared[setting.window_s]
         if setting.fixed_threshold_counts is not None:
             threshold = float(setting.fixed_threshold_counts)
         elif np.isfinite(noise):
@@ -181,25 +256,26 @@ def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.nd
         else:
             threshold = float("nan")
 
-        if used.size == 0 or not np.isfinite(threshold):
+        if n_used == 0 or not np.isfinite(threshold):
             results.append(ChannelResult(name, 0.0, float("nan"), threshold, 0, 0, float("nan"),
-                                         float("nan"), saturated, bad_buffer_samples))
+                                         float("nan"), saturated, bad_buffer_samples, fs=fs))
             continue
         starts = spike_starts(hp, usable, threshold, fs, setting.merge_s)
         span = max(1, round(setting.amplitude_s * fs))
         amplitudes = [float(np.max(np.abs(hp[i:i + span]))) for i in starts]
         results.append(ChannelResult(
             name=name,
-            usable_s=float(used.size / fs),
+            usable_s=float(n_used / fs),
             noise=noise,
             threshold=threshold,
             spikes=int(starts.size),
             positive_first=int(np.count_nonzero(hp[starts] > 0)),
             median_amplitude=float(np.median(amplitudes)) if amplitudes else float("nan"),
-            largest=float(np.max(np.abs(used))),
+            largest=largest,
             saturated=saturated,
             bad_buffer_samples=bad_buffer_samples,
             mean=mean,
             typical_range=typical_range,
+            fs=fs,
         ))
     return results

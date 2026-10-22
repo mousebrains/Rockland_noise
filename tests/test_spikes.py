@@ -2,7 +2,9 @@
 
 import numpy as np
 import pytest
+from scipy.ndimage import median_filter
 
+from rockland_noise import spikes
 from rockland_noise.spikes import MODES, SpikeSettings, analyze_channel, noise_level
 
 from .conftest import add_bursts, noise
@@ -121,3 +123,36 @@ def test_checklist_numbers():
     assert r.mean == pytest.approx(-25, abs=0.1)
     # 99.9% of a normal distribution lies within 3.29 standard deviations.
     assert r.typical_range == pytest.approx(3.29 * 3.0, rel=0.05)
+
+
+def test_running_median_in_blocks_is_exact(monkeypatch):
+    monkeypatch.setattr(spikes, "MEDIAN_BLOCK", 1000)
+    x = np.random.default_rng(12).integers(-500, 500, 10_007).astype(np.int32)
+    for size in (3, 51, 101):
+        assert np.array_equal(spikes.running_median(x, size),
+                              median_filter(x, size=size, mode="nearest"))
+
+
+@pytest.mark.parametrize("sigma", [0.3, 1.1, 3.2, 40.0])
+def test_noise_level_same_for_whole_numbers_and_floats(sigma):
+    x = counts(add_bursts(noise(TEN_MIN, sigma, seed=13), [5000, 90_000], size=30 * sigma))
+    assert noise_level(x.astype(np.int32)) == pytest.approx(noise_level(x), rel=1e-12)
+    assert noise_level(x[:-1].astype(np.int32)) == pytest.approx(noise_level(x[:-1]), rel=1e-12)
+
+
+def test_whole_number_and_float_channels_give_the_same_answer():
+    x = counts(add_bursts(noise(TEN_MIN, 3.0, -20, seed=14), list(range(2000, 300_000, 7000))))
+    ones = np.ones(x.size, bool)
+    a = analyze_channel("x", x, FS, ones, MODES["bench"])
+    b = analyze_channel("x", x.astype(np.int32), FS, ones, MODES["bench"])
+    assert (a.spikes, a.positive_first, a.largest, a.median_amplitude) == \
+        (b.spikes, b.positive_first, b.largest, b.median_amplitude)
+    assert a.noise == pytest.approx(b.noise, rel=1e-12)
+
+
+def test_saturation_depends_on_the_channel_range():
+    x = np.full(5000, 65535.0)  # the top of an unsigned channel such as JAC_T
+    x[::2] = 60000
+    ones = np.ones(x.size, bool)
+    assert analyze_channel("u", x, FS, ones, MODES["live"], limits=(0, 65535)).saturated == 2500
+    assert analyze_channel("u", x, FS, ones, MODES["live"], limits=None).saturated == 0
