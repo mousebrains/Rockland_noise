@@ -21,8 +21,9 @@ from pathlib import Path
 import numpy as np
 
 from .changes import Changes, ChangeSettings, find_changes
-from .reader import ChannelNotFoundError, PFileReadError, read_channels
-from .spikes import ChannelResult, SpikeSettings, analyze_channel
+from .reader import ChannelNotFoundError, Evidence, PFileReadError, read_channels
+from .setup import Setup, classify, run_mode
+from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
 
 # For the jump and trend search, one spike per hour is added to both channels'
 # rates, so the ratio stays finite when a channel has none (both having none
@@ -31,7 +32,7 @@ from .spikes import ChannelResult, SpikeSettings, analyze_channel
 # channel has a few spikes per hour or fewer. (AEM1-G clipped rates at 1/h.)
 EXTRA_SPIKES_PER_HOUR = 1.0
 WILDCARDS = set("*?[")
-CACHE_FORMAT = 2  # bump when ChannelResult or its meaning changes, so old answers are not reused
+CACHE_FORMAT = 3  # bump when ChannelResult or its meaning changes, so old answers are not reused
 
 
 def _version(package: str) -> str:
@@ -45,9 +46,10 @@ def _version(package: str) -> str:
 class Options:
     """Everything that decides the answer for one file."""
 
-    mode: str
-    spike_a: SpikeSettings
-    spike_b: SpikeSettings
+    mode: str  # "auto" (decide from the files), "bench" or "live"
+    # The spike settings (channel A, channel B) for each mode that may be used:
+    # both bench and live for "auto", so the files need reading only once.
+    spike: dict[str, tuple[SpikeSettings, SpikeSettings]]
     skip_start_s: float = 0.0
     min_pressure_dbar: float | None = None
     min_usable_s: float = 60.0  # files with less usable data are listed but not analysed
@@ -62,17 +64,25 @@ class FileResult:
     start: datetime | None = None
     instrument: str = ""
     file_number: int = -1
-    a: ChannelResult | None = None
+    evidence: Evidence | None = None
+    by_mode: dict[str, tuple[ChannelResult, ChannelResult]] = field(default_factory=dict)
+    a: ChannelResult | None = None  # the results for the mode the run uses
     b: ChannelResult | None = None
     error: str = ""
     notes: list[str] = field(default_factory=list)
     from_cache: bool = False
 
     @property
+    def setup(self) -> Setup | None:
+        return classify(self.evidence) if self.evidence is not None else None
+
+    @property
     def usable_s(self) -> float:
-        if self.a is None or self.b is None:
+        pair = (self.a, self.b) if self.a is not None else next(iter(self.by_mode.values()),
+                                                                 (None, None))
+        if pair[0] is None or pair[1] is None:
             return 0.0
-        return min(self.a.usable_s, self.b.usable_s)
+        return min(pair[0].usable_s, pair[1].usable_s)
 
     @property
     def spike_ratio_log(self) -> float:
@@ -96,11 +106,22 @@ class Comparison:
     channel_a: str
     channel_b: str
     options: Options
+    mode: str  # the mode used: "bench" or "live"
+    mode_reason: str  # why, in plain words
+    detected: str  # what the files themselves look like: "bench" or "live"
     files: list[FileResult]  # readable files in time order, then unreadable ones
     used: list[int]  # positions in ``files`` that went into the jump/trend search
     spikes: Changes
     noise: Changes
     noise_used: list[int]  # positions with a usable noise ratio (subset of used)
+
+    @property
+    def spike_a(self) -> SpikeSettings:
+        return self.options.spike[self.mode][0]
+
+    @property
+    def spike_b(self) -> SpikeSettings:
+        return self.options.spike[self.mode][1]
 
     @property
     def instruments(self) -> list[str]:
@@ -196,7 +217,6 @@ class Cache:
             "settings": settings,
             "format": CACHE_FORMAT,
             "rockland-noise": _version("rockland-noise"),
-            "microstructure-tpw": _version("microstructure-tpw"),
         }
         return hashlib.sha256(json.dumps(ident, sort_keys=True).encode()).hexdigest()
 
@@ -232,23 +252,26 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
                  cache: Cache) -> FileResult:
     """Spike and noise numbers for both channels of one file. Never raises for a bad file."""
     result = FileResult(path=path)
+    modes = list(options.spike)
     try:
-        keys = [Cache.key(path, channel_a, _channel_settings(options.spike_a, options)),
-                Cache.key(path, channel_b, _channel_settings(options.spike_b, options))]
+        keys = {(mode, slot): Cache.key(path, name, _channel_settings(
+                    options.spike[mode][slot], options))
+                for mode in modes for slot, name in enumerate((channel_a, channel_b))}
     except OSError as ex:
         result.error = f"Cannot open the file: {ex.strerror or ex}"
         return result
 
-    cached = [cache.get(k) for k in keys]
-    if all(c is not None for c in cached):
+    cached = {k: cache.get(key) for k, key in keys.items()}
+    if all(c is not None for c in cached.values()):
         try:
-            meta = cached[0]["file"]
+            meta = cached[(modes[0], 0)]["file"]
             result.start = datetime.fromisoformat(meta["start"])
             result.instrument = meta["instrument"]
             result.file_number = meta["file_number"]
             result.notes = list(meta["notes"])
-            result.a = ChannelResult(**cached[0]["channel"])
-            result.b = ChannelResult(**cached[1]["channel"])
+            result.evidence = Evidence(**meta["evidence"])
+            result.by_mode = {m: (ChannelResult(**cached[(m, 0)]["channel"]),
+                                  ChannelResult(**cached[(m, 1)]["channel"])) for m in modes}
             result.from_cache = True
             return result
         except (KeyError, TypeError, ValueError):
@@ -272,16 +295,20 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
     result.instrument = data.instrument
     result.file_number = data.file_number
     result.notes = data.notes
+    result.evidence = data.evidence
     meta = {"start": data.start.isoformat(), "instrument": data.instrument,
-            "file_number": data.file_number, "notes": data.notes}
-    ch_a = data.channels[data.resolved[channel_a]]
-    ch_b = data.channels[data.resolved[channel_b]]
-    for slot, ch, spike, key in (("a", ch_a, options.spike_a, keys[0]),
-                                 ("b", ch_b, options.spike_b, keys[1])):
-        res = analyze_channel(ch.name, ch.counts, ch.fs, ch.usable, spike, bad=ch.bad)
-        res.kind = ch.kind
-        setattr(result, slot, res)
-        cache.put(key, {"file": meta, "channel": asdict(res)})
+            "file_number": data.file_number, "notes": data.notes,
+            "evidence": asdict(data.evidence)}
+    per_slot = []
+    for slot, requested in enumerate((channel_a, channel_b)):
+        ch = data.channels[data.resolved[requested]]
+        results = analyze_channel_many(ch.name, ch.counts, ch.fs, ch.usable,
+                                       [options.spike[m][slot] for m in modes], bad=ch.bad)
+        for mode, res in zip(modes, results, strict=True):
+            res.kind = ch.kind
+            cache.put(keys[(mode, slot)], {"file": meta, "channel": asdict(res)})
+        per_slot.append(results)
+    result.by_mode = {m: (per_slot[0][i], per_slot[1][i]) for i, m in enumerate(modes)}
     return result
 
 
@@ -296,7 +323,7 @@ def _days(files: list[FileResult], idx: list[int]) -> np.ndarray:
 def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
             cache: Cache, progress: Callable[[int, int, FileResult], None] | None = None,
             ) -> Comparison:
-    """Analyse every file, then look for changes in time order."""
+    """Analyse every file, decide bench or live, then look for changes in time order."""
     results = []
     for i, path in enumerate(paths, 1):
         res = analyze_file(path, channel_a, channel_b, options, cache)
@@ -308,6 +335,17 @@ def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
                   key=lambda r: (r.start, r.path.name))
     bad = [r for r in results if r.error]
     files = good + bad
+
+    detected, why = run_mode([r.setup for r in good])
+    if options.mode == "auto":
+        mode, reason = detected, why
+    else:
+        mode = options.mode
+        reason = "chosen with --mode"
+        if detected != mode:
+            reason += f"; but the files look like {detected}: {why}"
+    for r in good:
+        r.a, r.b = r.by_mode[mode]
 
     used = [i for i, r in enumerate(files)
             if not r.error and r.usable_s >= options.min_usable_s
@@ -322,4 +360,5 @@ def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
 
     name_a = next((r.a.name for r in good if r.a), channel_a)
     name_b = next((r.b.name for r in good if r.b), channel_b)
-    return Comparison(name_a, name_b, options, files, used, spikes, noise, noise_used)
+    return Comparison(name_a, name_b, options, mode, reason, detected, files, used,
+                      spikes, noise, noise_used)

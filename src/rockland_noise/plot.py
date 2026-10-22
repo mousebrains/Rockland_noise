@@ -198,7 +198,7 @@ def plot(cmp: Comparison, path: Path) -> None:
     axes[-1].set_xlim(x[0] - 0.8, x[-1] + max(2.5, 0.08 * len(x)))
 
     inst = ", ".join(cmp.instruments) or "unknown instrument"
-    fig.suptitle(f"{a} vs {b}  |  {inst}  |  {cmp.options.mode} mode  |  {len(rows)} files",
+    fig.suptitle(f"{a} vs {b}  |  {inst}  |  {cmp.mode} mode  |  {len(rows)} files",
                  fontsize=11, color=INK, x=0.06, ha="left", y=0.955)
     fig.text(0.06, 0.925, "Vertical rule = jump, black line = trend, ring = unusual file."
              " Ratios above 1 mean channel A is higher.", fontsize=8, color=INK_2)

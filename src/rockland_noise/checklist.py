@@ -3,9 +3,9 @@
 The checklist asks, for the time series in raw counts, that each channel be
 "typically within +-N counts" of its mean, and for some channels that the
 offset (the mean itself) be below a limit. "Typically" is taken as 99.9% of the
-samples, the same reading as ``odas_tpw.rsi.bench`` (the ODAS quick_bench port
-in microstructure-tpw), so a lone glitch does not fail an otherwise clean
-channel and the two programs agree.
+samples, the same reading as ``rsi-tpw bench`` (the ODAS quick_bench port in
+the separate microstructure-tpw package), so a lone glitch does not fail an
+otherwise clean channel and the two programs agree.
 
 Only items about one channel at a time are here. The checklist's spectra,
 accelerometer, inclinometer and EM-sensor items need ``rsi-tpw bench``,

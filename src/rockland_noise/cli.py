@@ -23,8 +23,9 @@ examples:
   rockland-noise channels data/RIOT_SL684_0520.p
       list the channel names in a file
 
-  rockland-noise compare T1_dT1 T2_dT2 data/ --mode bench
-      compare the two thermistor channels in every .p file in the folder data
+  rockland-noise compare T1_dT1 T2_dT2 data/
+      compare the two thermistor channels in every .p file in the folder data;
+      it works out by itself whether this is a bench test
 
   rockland-noise compare sh1 sh2 data/*.p --min-pressure 5 --csv sh.csv --plot sh.png
       compare the shear channels in deployed data, below 5 dbar, and save a
@@ -92,9 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("channel_b", metavar="CHANNEL_B", help="second channel, e.g. T2_dT2 or sh2")
     c.add_argument("paths", metavar="PFILES", nargs="+",
                    help="P-files, folders of P-files, or patterns like data/*.p")
-    c.add_argument("--mode", choices=sorted(MODES), default="live",
-                   help="bench = bench test with Rockland test probes (cleaner, more sensitive);"
-                        " live = real probes in a tank or the ocean (default: live)")
+    c.add_argument("--mode", choices=["auto", *sorted(MODES)], default="auto",
+                   help="auto (default) = decide from the files: test probes (T1 and T2 read"
+                        " their steady reference temperature, usually 16.15 C) and steady"
+                        " pressure mean a bench test; bench = bench test with Rockland test"
+                        " probes (more sensitive); live = real probes, or deployed")
     c.add_argument("-r", "--recursive", action="store_true",
                    help="also look for P-files in sub-folders of any folder given")
     c.add_argument("--csv", metavar="FILE", type=Path,
@@ -141,24 +144,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _options(args: argparse.Namespace) -> Options:
-    base = MODES[args.mode]
     changes = {}
     if args.threshold_sigma is not None:
         changes["threshold_sigma"] = args.threshold_sigma
     if args.min_threshold_counts is not None:
         changes["min_threshold_counts"] = args.min_threshold_counts
-    spike_a = spike_b = dataclasses.replace(base, **changes)
-    if args.threshold_counts:
-        if len(args.threshold_counts) > 2:
-            raise SystemExit("Problem: --threshold-counts takes one or two numbers.")
-        fixed_a = args.threshold_counts[0]
-        fixed_b = args.threshold_counts[-1]
-        spike_a = dataclasses.replace(spike_a, fixed_threshold_counts=fixed_a)
-        spike_b = dataclasses.replace(spike_b, fixed_threshold_counts=fixed_b)
+    if args.threshold_counts and len(args.threshold_counts) > 2:
+        raise SystemExit("Problem: --threshold-counts takes one or two numbers.")
+    spike = {}
+    for mode in (MODES if args.mode == "auto" else [args.mode]):
+        spike_a = spike_b = dataclasses.replace(MODES[mode], **changes)
+        if args.threshold_counts:
+            spike_a = dataclasses.replace(spike_a, fixed_threshold_counts=args.threshold_counts[0])
+            spike_b = dataclasses.replace(spike_b, fixed_threshold_counts=args.threshold_counts[-1])
+        spike[mode] = (spike_a, spike_b)
     return Options(
         mode=args.mode,
-        spike_a=spike_a,
-        spike_b=spike_b,
+        spike=spike,
         skip_start_s=args.skip_start,
         min_pressure_dbar=args.min_pressure,
         min_usable_s=args.min_minutes * 60,

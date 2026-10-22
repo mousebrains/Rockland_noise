@@ -55,21 +55,35 @@ wiggle. The program counts how many start in each file.
     channels first, so a file where one channel had no spikes still gets a
     number. That only matters when a channel has very few spikes.
 
-Bench or live?  (the --mode option)
------------------------------------
-  bench  The instrument is on the bench with Rockland TEST PROBES: the
-         open-circuit shear probes and the fixed-resistor temperature probes.
-         The signal should be only the electronics' own small noise, so a
-         healthy channel usually shows NO spikes at all, and the noise of
-         matching channels should be nearly equal.
-  live   Real probes, in a tank or deployed in the ocean. The probes now sense
-         real things: turbulence, temperature changes, plankton hitting the
-         probe tip, vibration. Some spikes are real and expected. What matters
-         most is how the two channels compare, and whether that changes.
-         For deployed data add --min-pressure (for example --min-pressure 5) so
-         time at the surface or out of the water is not counted.
+Bench or live?  (worked out for you; --mode to choose yourself)
+---------------------------------------------------------------
+  bench  Rockland TEST PROBES are on (open-circuit shear probes and
+         fixed-resistor temperature probes) and the instrument is not being
+         deployed: on a bench, on a ship's deck, or in a test tank. The signal
+         should be only the electronics' own small noise, so a healthy
+         channel usually shows NO spikes at all, and the noise of matching
+         channels should be nearly equal.
+  live   Real probes, or an instrument that is being deployed. Real probes
+         sense real things: turbulence, temperature changes, plankton hitting
+         the probe tip, vibration. Some spikes are real and expected. What
+         matters most is how the two channels compare, and whether that
+         changes. For deployed data add --min-pressure (for example
+         --min-pressure 5) so time at the surface or out of the water is not
+         counted.
 
-If you are not sure, use live (the default). It is the more cautious one.
+How the program tells them apart (the report says what it found and why):
+  * Test probes: a temperature test probe is a fixed resistor, so T1 or T2
+    reads a steady temperature equal to the reference temperature T_0 in the
+    instrument's setup, usually 16.15 C ("about 16.3" is the rule of thumb).
+    One such channel is enough: an unsteady partner channel next to it is
+    flagged, because it usually means bad temperature electronics. On a VMP
+    the report also says whether that channel follows the water temperature
+    measured by the CT sensor (JAC_T), as a real probe would.
+  * Not deployed: the pressure stays steady (within 2 dbar). Tilt and shaking
+    are shown but do not decide, because a bench test on a rolling ship is
+    still a good test of the temperature and shear channels.
+  * If some files have test probes and others real probes, the program uses
+    live and asks you to run the two kinds separately.
 
 In bench mode the report also fills in the numbers for the items of Rockland's
 Bench Test Review Checklist (V3) that are about the two channels, for example

@@ -8,7 +8,7 @@ import pytest
 
 from rockland_noise.cli import main
 
-from .conftest import T0, add_bursts, noise
+from .conftest import T0, add_bursts, bench_channels, noise
 
 SECONDS = 120  # each test file is two minutes long
 
@@ -119,14 +119,16 @@ def test_second_run_uses_the_cache_and_new_settings_do_not(maker, tmp_path, caps
     run(capsys, *args)
     _, _, err = run(capsys, *args)
     assert err.count("remembered from an earlier run") == 2
-    _, _, err = run(capsys, *args, "--mode", "bench")
+    _, _, err = run(capsys, *args, "--mode", "bench")  # auto already worked out bench
+    assert err.count("remembered from an earlier run") == 2
+    _, _, err = run(capsys, *args, "--threshold-sigma", "7")
     assert "remembered" not in err
 
 
 def test_min_pressure_uses_only_deep_data(maker, tmp_path, capsys, cache):
     """P is above 20 dbar for the second half only; only those spikes count."""
-    cal = maker.pf.channel_info["P"]["cal"]
-    deep = (20 - cal["coef0"]) / cal["coef1"]  # counts for 20 dbar (ignoring the tiny c2)
+    cal = maker.pf.setup("P").params
+    deep = (20 - float(cal["coef0"])) / float(cal["coef1"])  # counts for 20 dbar (c2 is tiny)
     n, n_slow = maker.fast_samples(SECONDS), SECONDS * 64
     p = np.where(np.arange(n_slow) < n_slow // 2, 0.0, deep)
     t1 = add_bursts(noise(n, 3.0, seed=1), [5000, 10_000, 40_000, 50_000])
@@ -152,3 +154,59 @@ def test_channels_and_explain(maker, tmp_path, capsys):
 def test_no_command_prints_help(capsys):
     code, out, _ = run(capsys)
     assert code == 0 and "compare" in out
+
+
+def write_bench_set(maker, folder, bursts_per_file):
+    """Files that look like a bench test: test probes, steady pressure."""
+    folder.mkdir(exist_ok=True)
+    n = maker.fast_samples(SECONDS)
+    for k, nb in enumerate(bursts_per_file):
+        where = list(np.linspace(1000, n - 1000, nb).astype(int)) if nb else []
+        channels = bench_channels(maker, SECONDS, seed=k)
+        channels |= {"T1_dT1": add_bursts(noise(n, 3.0, -20, seed=k), where),
+                     "T2_dT2": noise(n, 3.0, -20, seed=100 + k)}
+        maker.write(folder / f"BENCH_{k + 1:04d}.p", start=T0 + timedelta(hours=k),
+                    seconds=SECONDS, channels=channels)
+
+
+def test_auto_mode_recognises_a_bench_test(maker, tmp_path, capsys, cache):
+    write_bench_set(maker, tmp_path / "bench", [0, 0, 0])
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "bench", *cache)
+    assert code == 0
+    assert "Mode:       bench" in out
+    assert "test probes" in out and "pressure stayed put in 3 of 3 files" in out
+    assert "Rockland Bench Test Review Checklist" in out
+
+
+def test_auto_mode_says_live_for_real_probes(maker, tmp_path, capsys, cache):
+    write_set(maker, tmp_path / "data", [0, 0, 0])  # the template's own probes: 12 and 11 C
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache)
+    assert code == 0
+    assert "Mode:       live" in out and "real probes" in out
+    assert "Checklist" not in out
+
+
+def test_forcing_a_mode_that_disagrees_is_pointed_out(maker, tmp_path, capsys, cache):
+    write_bench_set(maker, tmp_path / "bench", [0, 0])
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "bench",
+                       "--mode", "live", *cache)
+    assert code == 0
+    assert "Mode:       live" in out and "but the files look like bench" in out
+
+
+def test_bad_temperature_electronics_on_one_channel(maker, tmp_path, capsys, cache):
+    """T1 a test probe; T2 wanders (bad electronics): still a bench test, T2 flagged."""
+    folder = tmp_path / "bench"
+    folder.mkdir()
+    n, n_slow = maker.fast_samples(SECONDS), SECONDS * 64
+    for k in range(3):
+        channels = bench_channels(maker, SECONDS, seed=k)
+        wander = np.cumsum(np.random.default_rng(k).normal(0, 20, n_slow))
+        channels["T2"] = channels["T2"] + wander
+        channels |= {"T1_dT1": noise(n, 3.0, -20, seed=k), "T2_dT2": noise(n, 3.0, -20, seed=9)}
+        maker.write(folder / f"B_{k}.p", start=T0 + timedelta(hours=k), seconds=SECONDS,
+                    channels=channels)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", folder, *cache)
+    assert code == 0
+    assert "Mode:       bench" in out
+    assert "Temperature channels" in out and "T2 is unsteady" in out and "3 file(s)" in out

@@ -45,10 +45,11 @@ class SpikeSettings:
 # The two kinds of data, and the settings that suit each.
 #
 # bench: test probes (open-circuit shear, fixed-resistor temperature), so the
-#   signal is only the electronics' own noise. On MR433/MR435/MR533 bench and
-#   tank files the largest excursion of a healthy channel in 4 hours was 5.0 to
-#   5.9 times the noise, as expected for well-behaved noise, and none reached 6.
-#   Expected false spikes at 6 times the noise: about 1 every 250 hours.
+#   signal is only the electronics' own noise. In 4-hour bench tests of
+#   MR433/MR435/MR533 (in a tank and on a patio, all with test probes) the
+#   largest excursion of a healthy channel was 5.0 to 5.9 times the noise, as
+#   expected for well-behaved noise, and none reached 6. Expected false spikes
+#   at 6 times the noise: about 1 every 250 hours.
 # live: real probes, which also see the water (turbulence, plankton,
 #   vibration). Real signal has more big excursions, so the threshold is the
 #   AEM1-G value of 8 times the noise, and at least 10 counts.
@@ -131,7 +132,17 @@ def analyze_channel(name: str, counts: np.ndarray, fs: float, usable: np.ndarray
     """Noise and spikes for one channel.
 
     ``usable`` marks the samples to count. ``bad`` marks samples the logger
-    flagged as bad; they must also be unusable.
+    flagged as bad; they are never counted.
+    """
+    return analyze_channel_many(name, counts, fs, usable, [settings], bad)[0]
+
+
+def analyze_channel_many(name: str, counts: np.ndarray, fs: float, usable: np.ndarray,
+                         settings: list[SpikeSettings],
+                         bad: np.ndarray | None = None) -> list[ChannelResult]:
+    """Like analyze_channel for several settings at once (e.g. bench and live).
+
+    The slow part, the running median, is done once per window length.
     """
     counts = np.asarray(counts, dtype=np.float64)
     usable = np.asarray(usable, dtype=bool)
@@ -146,40 +157,47 @@ def analyze_channel(name: str, counts: np.ndarray, fs: float, usable: np.ndarray
         usable = usable & ~bad
     saturated = int(np.count_nonzero(((counts <= INT16_MIN) | (counts >= INT16_MAX)) & usable))
 
-    hp = fast_part(counts, fs, settings.window_s)
-    used = hp[usable]
-    noise = noise_level(used)
-    if settings.fixed_threshold_counts is not None:
-        threshold = float(settings.fixed_threshold_counts)
-    elif np.isfinite(noise):
-        threshold = max(settings.threshold_sigma * noise, settings.min_threshold_counts)
-    else:
-        threshold = float("nan")
-
-    if used.size == 0 or not np.isfinite(threshold):
-        return ChannelResult(name, 0.0, float("nan"), threshold, 0, 0, float("nan"), float("nan"),
-                             saturated, bad_buffer_samples)
-
     # The bench-test checklist's numbers: offset, and the range that 99.9% of
     # the samples stay within (see checklist.py).
     raw = counts[usable]
-    mean = float(np.mean(raw))
-    typical_range = float(np.percentile(np.abs(raw - mean), 99.9))
+    mean = float(np.mean(raw)) if raw.size else float("nan")
+    typical_range = (float(np.percentile(np.abs(raw - mean), 99.9)) if raw.size
+                     else float("nan"))
 
-    starts = spike_starts(hp, usable, threshold, fs, settings.merge_s)
-    span = max(1, round(settings.amplitude_s * fs))
-    amplitudes = [float(np.max(np.abs(hp[i:i + span]))) for i in starts]
-    return ChannelResult(
-        name=name,
-        usable_s=float(used.size / fs),
-        noise=noise,
-        threshold=threshold,
-        spikes=int(starts.size),
-        positive_first=int(np.count_nonzero(hp[starts] > 0)),
-        median_amplitude=float(np.median(amplitudes)) if amplitudes else float("nan"),
-        largest=float(np.max(np.abs(used))),
-        saturated=saturated,
-        bad_buffer_samples=bad_buffer_samples,
-        mean=mean,
-        typical_range=typical_range,
-    )
+    prepared: dict[float, tuple[np.ndarray, np.ndarray, float]] = {}
+    results = []
+    for setting in settings:
+        if setting.window_s not in prepared:
+            hp = fast_part(counts, fs, setting.window_s)
+            used = hp[usable]
+            prepared[setting.window_s] = (hp, used, noise_level(used))
+        hp, used, noise = prepared[setting.window_s]
+        if setting.fixed_threshold_counts is not None:
+            threshold = float(setting.fixed_threshold_counts)
+        elif np.isfinite(noise):
+            threshold = max(setting.threshold_sigma * noise, setting.min_threshold_counts)
+        else:
+            threshold = float("nan")
+
+        if used.size == 0 or not np.isfinite(threshold):
+            results.append(ChannelResult(name, 0.0, float("nan"), threshold, 0, 0, float("nan"),
+                                         float("nan"), saturated, bad_buffer_samples))
+            continue
+        starts = spike_starts(hp, usable, threshold, fs, setting.merge_s)
+        span = max(1, round(setting.amplitude_s * fs))
+        amplitudes = [float(np.max(np.abs(hp[i:i + span]))) for i in starts]
+        results.append(ChannelResult(
+            name=name,
+            usable_s=float(used.size / fs),
+            noise=noise,
+            threshold=threshold,
+            spikes=int(starts.size),
+            positive_first=int(np.count_nonzero(hp[starts] > 0)),
+            median_amplitude=float(np.median(amplitudes)) if amplitudes else float("nan"),
+            largest=float(np.max(np.abs(used))),
+            saturated=saturated,
+            bad_buffer_samples=bad_buffer_samples,
+            mean=mean,
+            typical_range=typical_range,
+        ))
+    return results

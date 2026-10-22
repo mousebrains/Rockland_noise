@@ -85,6 +85,15 @@ def spike_ratio_text(r: FileResult) -> str:
     return factor(a.rate_per_hour / b.rate_per_hour)
 
 
+def _setup_label(r: FileResult) -> str:
+    s = r.setup
+    if s is None or s.probes == "unknown":
+        return "probes unknown"
+    probes = {"test": "test probes", "real": "real probes"}
+    moving = {True: "", False: ", pressure changing", None: ""}[s.steady]
+    return probes[s.probes] + moving
+
+
 def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
     out = []
     if r.error:
@@ -100,13 +109,18 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
             out.append(f"{label} hit its limit {ch.saturated}x")
         if ch.bad_buffer_samples:
             out.append(f"{label} had {ch.bad_buffer_samples} bad samples (skipped)")
-    if cmp.options.mode == "bench":
+    labels = {_setup_label(f) for f in cmp.files if not f.error}
+    if len(labels) > 1:  # say which files differ from the rest
+        out.append(_setup_label(r))
+    if cmp.mode == "bench":
         for label, ch in (("A", r.a), ("B", r.b)):
             limit = checklist.limit_for(ch.name) if ch else None
             if limit and checklist.problems(ch, limit):
                 out.append(f"{label} outside bench checklist")
         if r.usable_s < checklist.MIN_FILE_SECONDS:
             out.append("shorter than the 60 s the checklist asks for")
+    if r.setup is not None:
+        out += [w.split(":")[0].replace(" is ", " ") for w in r.setup.warnings]
     if r.notes:
         out.append("reader warning (see CSV)")
     return out
@@ -333,24 +347,37 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
 
 
 def mode_line(cmp: Comparison) -> str:
-    o = cmp.options
-    if o.spike_a.fixed_threshold_counts is not None:
-        rule = (f"a spike is a jump bigger than {o.spike_a.fixed_threshold_counts:g} counts"
-                + (f" on A and {o.spike_b.fixed_threshold_counts:g} on B"
-                   if o.spike_b.fixed_threshold_counts != o.spike_a.fixed_threshold_counts
-                   else ""))
+    a, b = cmp.spike_a, cmp.spike_b
+    if a.fixed_threshold_counts is not None:
+        rule = (f"a spike is a jump bigger than {a.fixed_threshold_counts:g} counts"
+                + (f" on A and {b.fixed_threshold_counts:g} on B"
+                   if b.fixed_threshold_counts != a.fixed_threshold_counts else ""))
     else:
-        rule = (f"a spike is a jump bigger than {o.spike_a.threshold_sigma:g} times the"
-                f" channel's noise (and at least {o.spike_a.min_threshold_counts:g} counts)")
-    kind = {"bench": "bench test with test probes", "live": "real probes"}[o.mode]
-    custom = "" if MODES[o.mode] in (o.spike_a, o.spike_b) else ", with your own settings"
-    return f"{o.mode} ({kind}{custom}): {rule}"
+        rule = (f"a spike is a jump bigger than {a.threshold_sigma:g} times the"
+                f" channel's noise (and at least {a.min_threshold_counts:g} counts)")
+    kind = {"bench": "bench test", "live": "live data"}[cmp.mode]
+    custom = "" if MODES[cmp.mode] in (a, b) else ", with your own settings"
+    return f"{cmp.mode} ({kind}{custom}): {rule}"
+
+
+def temperature_warnings(cmp: Comparison) -> list[str]:
+    """Temperature channels that do not behave like their partner test probe."""
+    found: dict[str, list[int]] = {}
+    for i, f in enumerate(cmp.files):
+        if not f.error and f.setup is not None:
+            for w in f.setup.warnings:
+                found.setdefault(w, []).append(i + 1)
+    out = []
+    for warning, rows in found.items():
+        shown = ", ".join(str(r) for r in rows[:15]) + (" ..." if len(rows) > 15 else "")
+        out.append(f"  {warning} ({len(rows)} file(s): #{shown})")
+    return ["", "Temperature channels", *out] if out else []
 
 
 def bench_hints(cmp: Comparison) -> list[str]:
     """Extra plain-language warnings that only make sense for a bench test."""
     rows = cmp.used
-    if cmp.options.mode != "bench" or not rows:
+    if cmp.mode != "bench" or not rows:
         return []
     out = []
     ra, rb = _median_rates(cmp, rows)
@@ -377,7 +404,7 @@ def bench_hints(cmp: Comparison) -> list[str]:
 
 def checklist_section(cmp: Comparison) -> list[str]:
     """The Rockland bench checklist items about the two channels, file by file."""
-    if cmp.options.mode != "bench":
+    if cmp.mode != "bench":
         return []
     rows = [i for i, f in enumerate(cmp.files) if not f.error and f.usable_s > 0]
     if not rows:
@@ -422,6 +449,7 @@ def text_report(cmp: Comparison) -> str:
     lines = ["Rockland spike and noise comparison", ""]
     lines.append(f"  Channels:   A = {cmp.channel_a}   B = {cmp.channel_b}")
     lines.append(f"  Mode:       {mode_line(cmp)}")
+    lines.append(f"              Why: {cmp.mode_reason}.")
     if cmp.options.min_pressure_dbar is not None:
         lines.append(f"  Using only data deeper than {cmp.options.min_pressure_dbar:g} dbar.")
     if cmp.options.skip_start_s:
@@ -449,6 +477,7 @@ def text_report(cmp: Comparison) -> str:
     lines += ["", "Noise"]
     lines += findings(cmp, cmp.noise, cmp.noise_used, "noise",
                       cmp.options.noise_changes.min_factor)
+    lines += temperature_warnings(cmp)
     hints = bench_hints(cmp)
     if hints:
         lines += ["", "Bench test", *hints]
@@ -458,6 +487,10 @@ def text_report(cmp: Comparison) -> str:
 
 
 # --- CSV -------------------------------------------------------------------------
+
+
+def _round(x: float, digits: int):
+    return round(x, digits) if math.isfinite(x) else ""
 
 
 def _checklist_word(ch) -> str:
@@ -511,9 +544,27 @@ def write_csv(cmp: Comparison, path: Path) -> None:
             "usable_hours": round(r.usable_s / 3600, 4),
             "channel_A": cmp.channel_a,
             "channel_B": cmp.channel_b,
+            "mode": cmp.mode,
         }
         row |= channel_cols("A", r.a)
         row |= channel_cols("B", r.b)
+        ev, st = r.evidence, r.setup
+        if ev is not None:
+            row |= {
+                "probes": st.probes,
+                "temperature_warnings": " | ".join(st.warnings),
+                "T1_follows_JAC_T": _round(ev.t1_follows, 3),
+                "T2_follows_JAC_T": _round(ev.t2_follows, 3),
+                "JAC_T_spread_C": _round(ev.water_spread, 3),
+                "pressure_steady": {True: "yes", False: "no", None: ""}[st.steady],
+                "setup_evidence": st.detail,
+                "T1_C": _round(ev.t1, 3), "T2_C": _round(ev.t2, 3),
+                "T1_reference_C": _round(ev.t1_ref, 3), "T2_reference_C": _round(ev.t2_ref, 3),
+                "T1_spread_C": _round(ev.t1_spread, 4), "T2_spread_C": _round(ev.t2_spread, 4),
+                "tilt_spread_deg": _round(ev.tilt_spread, 3), "shake_counts": _round(ev.shake, 1),
+                "pressure_dbar": _round(ev.pressure, 2),
+                "pressure_spread_dbar": _round(ev.pressure_spread, 2),
+            }
         sr, nr = r.spike_ratio_log, r.noise_ratio_log
         plain = (r.a.rate_per_hour / r.b.rate_per_hour
                  if r.a and r.b and r.b.spikes > 0 and r.b.usable_s > 0 else math.nan)

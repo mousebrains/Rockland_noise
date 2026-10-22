@@ -1,9 +1,10 @@
 """Agreement with the AEM1-G analysis on real MR433 files, where those files exist.
 
 AEM1-G (results/mr_t1_spike_history_raw.csv) counted MR433 T1 fault bursts in
-the 2026 tank files with a threshold that came out at 23.7 counts, skipping the
-first 600 s. With the same fixed threshold this program must give the same
-counts. The P-files are large and not part of this repository; set
+the 2026 tank bench tests (test probes, in a water tank) with a threshold that
+came out at 23.7 counts, skipping the first 600 s. With the same fixed
+threshold this program must give the same counts. The P-files are large and
+not part of this repository; set
 ROCKLAND_NOISE_AEM1G to the AEM1-G Tank_Test folder to run these tests.
 """
 
@@ -44,3 +45,12 @@ def test_healthy_channels_have_no_bench_spikes():
         r = analyze_channel(c.name, c.counts, c.fs, c.usable, MODES["bench"], bad=c.bad)
         assert r.spikes == 0, c.name
         assert np.isfinite(r.noise)
+
+
+def test_tank_files_are_recognised_as_bench_tests():
+    from rockland_noise.setup import classify
+
+    data = read_channels(TANK / "RIOT_SL684_0511.p", ["T1_dT1"])
+    s = classify(data.evidence)
+    assert s.probes == "test" and s.bench
+    assert abs(data.evidence.t1 - data.evidence.t1_ref) < 0.05

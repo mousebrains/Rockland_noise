@@ -11,11 +11,15 @@ It answers questions like:
 * "Is this bench test clean, and does it pass Rockland's bench checklist?"
 
 ```
-rockland-noise compare T1_dT1 T2_dT2 /path/to/pfiles --mode bench
+rockland-noise compare T1_dT1 T2_dT2 /path/to/pfiles
 ```
 
-You do not need to know statistics or programming to use it. The report explains
-itself in plain words, and `rockland-noise explain` describes every number.
+You do not need to know statistics or programming to use it. It works out by
+itself whether the files are a bench test, the report explains itself in plain
+words, and `rockland-noise explain` describes every number.
+
+It is self-contained: it reads P-files with its own reader and needs only
+numpy, scipy and matplotlib.
 
 ---
 
@@ -69,17 +73,32 @@ of files, or a pattern such as `data/*.p`.
 
 | What you are looking at | Command |
 |---|---|
-| A **bench test** with Rockland test probes | `rockland-noise compare T1_dT1 T2_dT2 data/ --mode bench` |
-| Real probes in a **tank** | `rockland-noise compare T1_dT1 T2_dT2 data/` |
+| A **bench test** (test probes; on a bench, a ship's deck or in a tank) | `rockland-noise compare T1_dT1 T2_dT2 data/` |
 | **Deployed** data (ignore time near the surface) | `rockland-noise compare sh1 sh2 data/ --min-pressure 5` |
 | Save a **spreadsheet and a picture** for your supervisor | add `--csv results.csv --plot results.png` |
 
-**Bench or live?** Use `--mode bench` when the instrument has Rockland's **test
-probes** on (open-circuit shear, fixed-resistor temperature). The signal is then
-only electronic noise, so the tool can be more sensitive: a spike is anything
-over 6 times the noise. Use `--mode live` (the default) for **real probes**,
-which also sense real things in the water, so the tool asks for 8 times the
-noise. If unsure, leave it out: live is the cautious choice.
+**Bench or live?** The tool decides from the files, and the report's `Mode:`
+and `Why:` lines say what it found:
+
+* **bench**: Rockland **test probes** are on (open-circuit shear,
+  fixed-resistor temperature) and the instrument is not deployed. The signal
+  is only electronic noise, so the tool is more sensitive: a spike is anything
+  over 6 times the noise.
+* **live**: real probes, or a deployed instrument. Real probes sense real
+  things in the water, so a spike must be over 8 times the noise.
+
+How it tells: a temperature test probe is a fixed resistor, so T1 or T2 reads a
+steady temperature equal to the reference temperature T₀ in the instrument's
+setup, usually 16.15 °C ("about 16.3" is the rule of thumb). And the pressure
+stays within 2 dbar. Tilt and shaking are shown but do not decide: a bench test
+on a rolling ship is still a good test of the temperature and shear channels.
+If one temperature channel reads its T₀ and the other wanders, the file is
+still a bench test and the wandering channel is flagged (bad temperature
+electronics?); on a VMP the report says whether it follows the water
+temperature from the CT sensor (JAC_T), as a real probe would. A set mixing
+test-probe and real-probe files is analysed as live, with a note to run the
+two kinds separately. `--mode bench` or `--mode live` overrides the choice;
+the report then says if the files disagree.
 
 In bench mode the report also fills in the numbers for the items of Rockland's
 **Bench Test Review Checklist (V3)** that concern the two channels: "typically
@@ -92,7 +111,8 @@ fault.
 
 ```
   Channels:   A = T1_dT1   B = T2_dT2
-  Mode:       bench (bench test with test probes): a spike is a jump bigger than 6 times the channel's noise (and at least 5 counts)
+  Mode:       bench (bench test): a spike is a jump bigger than 6 times the channel's noise (and at least 5 counts)
+              Why: T1 and T2 read their steady reference temperature (test probes) and the pressure stayed put in 12 of 12 files.
 
                                                    ------spikes per hour-------  -------noise (counts)-------
    #  P-file             Start (UTC)        Hours    T1_dT1    T2_dT2       A/B    T1_dT1    T2_dT2       A/B  Notes
@@ -152,9 +172,25 @@ Run `rockland-noise explain` for the full plain-language guide.
 This is the rule used for the MR433 T1 fault in the AEM1-G project. With
 `--threshold-counts 23.7 --skip-start 600` it reproduces the AEM1-G counts file
 for file (see `tests/test_real_data.py`). The bench threshold rests on
-measurement: on healthy MR433, MR435 and MR533 channels, in 4-hour bench and tank
-files, the largest excursion was 5.0–5.9 × the noise, as expected for Gaussian
-noise, and never 6.
+measurement: on healthy MR433, MR435 and MR533 channels, in 4-hour bench tests
+(in a tank and on a patio, all with test probes), the largest excursion was
+5.0–5.9 × the noise, as expected for Gaussian noise, and never 6.
+
+**Bench or live** (`setup.py`), from 946 files of MicroRiders (SN 330, 429,
+433, 435, 533) and VMPs (SN 132, 142, 409, 465, 479):
+
+* Bench thermistors read within 0.03 °C of their T₀ (99% of 324
+  channel-files; 0.2 °C at most, on MR433's faulty T1); none of 376
+  real-probe channel-files came within 0.5 °C of T₀ while steady. T₀ is
+  usually 16.15 °C but 7.88, 9.45, 14.27 and 16.96 °C also occur, so the test
+  is against each channel's own T₀, not a fixed temperature.
+* Bench pressure varies by less than 0.5 dbar (3.9 in one file where the
+  instrument was handled); deployed profilers, including
+  ARCTERX 2023 Wake VMP casts made with test probes, by tens to hundreds.
+* Real probes follow JAC_T (rank correlation ≥ 0.52, median 1.00) whenever
+  the water temperature varies by more than 2 °C. Incl_T, the housing
+  temperature, lags the water too much to help (correlation about 0 on VMP
+  casts).
 
 **Jumps, trends, unusual files** (`changes.py`) work on log10 of each ratio,
 file by file in time order:
@@ -199,11 +235,16 @@ uv venv --python 3.13 && uv pip install -e ".[dev]"
 .venv/bin/ruff check src tests
 ```
 
-The P-file reader is [microstructure-tpw](https://github.com/mousebrains/turbulence)
-(`odas_tpw.rsi.p_file.PFile`, read with `deconvolve=False` for raw counts). The
-tests build small P-files from `tests/data/MR_SL435_template.p`, a 20-s
-MicroRider file from that project's test data, with synthetic counts written
-into chosen channels. `tests/test_real_data.py` checks agreement with AEM1-G
+The P-file reader (`pfile.py`) follows Rockland's Technical Note 051 and the
+ODAS MATLAB library. It was checked sample for sample against
+[microstructure-tpw](https://github.com/mousebrains/turbulence)'s reader on 23
+files (MicroRiders and VMPs, formats 6.0–6.3, 512 and 1024 Hz, 32-bit channels,
+real bad-buffer runs); `tests/test_pfile.py` pins reference values from it. It
+converts to physical units only pressure, thermistor, inclinometer and JAC_T
+channels; everything else stays in counts. The tests build small P-files from
+`tests/data/MR_SL435_template.p`, a 20-s MicroRider file from
+microstructure-tpw's test data, with synthetic counts written into chosen
+channels. `tests/test_real_data.py` checks agreement with AEM1-G
 when the AEM1-G tank files are present (`ROCKLAND_NOISE_AEM1G=/path/to/Tank_Test`).
 
 License: GPL-3.0-or-later.
