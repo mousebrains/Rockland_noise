@@ -162,7 +162,11 @@ as the same size of change.
 
 To be reported, a change must be at least 2x for the spike ratio (1.25x for
 the noise ratio; both can be changed with --min-factor and
---min-noise-factor), and it must be unlikely to be chance.
+--min-noise-factor), and it must be unlikely to be chance. That is the
+smallest change worth reporting, not the smallest that is sure to be found:
+in tests on 30 files that each differed from the next by about 1.4x, a
+lasting 3x change was found nearly 9 times in 10, a 2x change only 1 time in
+3.
 
 "How sure" explained
 --------------------

@@ -282,10 +282,15 @@ file by file in time order:
 * To compare spike rates when one channel has none, 1 spike per hour is added
   to both rates before the ratio is taken for jump and trend detection.
 
-Measured on synthetic series of 30 files: no false jumps or trends in 200
-series of independent noise; 4% false jumps on strongly autocorrelated noise
-(lag-1 correlation 0.7); a 3× step in correlated noise (lag-1 correlation 0.5)
-found 87% of the time. On the AEM1-G per-file counts it finds the MR433
+Measured on synthetic series of 30 files, each file scattered by 0.15 in
+log10 (about ×1.4), as in the tests: no false jumps or trends in 200 series of
+independent noise; 5% false jumps (±0.7%, 1,000 series) when neighbouring files
+are strongly alike (lag-1 correlation 0.7). A step halfway through is found 87%
+of the time when it is 3×, but only 34% of the time when it is 2×, the smallest
+change reported by default (400 series each): `--min-factor` sets what is worth
+reporting, not what is sure to be found. When neighbouring files are alike
+(lag-1 correlation 0.5, the same 0.15 scatter from one file to the next), a 3×
+step is found 68% of the time (84% with a scatter of 0.10). On the AEM1-G per-file counts it finds the MR433
 2025 → 2026 jump (about 270×; T2 had no spikes, so the ratio follows T1's rate),
 the onset of MR435's T2 fault at file A685_0158 (2023-06-12 17:17 UTC, T2 about
 10× busier, T1 unchanged), and a temporary T2 change in MR433's 2023 deployment.
