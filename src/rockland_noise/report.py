@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import checklist
+from . import checklist, health
 from .changes import Changes, Jump, neighbours
 from .compare import Comparison, FileResult
 from .spikes import MODES, SHARED_WINDOW_S
@@ -83,7 +83,7 @@ def times_word(f: float) -> str:
 def spike_ratio_text(r: FileResult) -> str:
     """The spike ratio for the table: a number, or who had spikes."""
     a, b = r.a, r.b
-    if a is None or b is None:
+    if a is None or b is None or r.problems:
         return "-"
     if a.spikes == 0 and b.spikes == 0:
         return "none"
@@ -116,12 +116,15 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
         return [r.error]
     if r.usable_s < cmp.options.min_usable_s:
         out.append("too little usable data, left out")
-    for label, ch in (("A", r.a), ("B", r.b)):
+    for label, slot, ch in (("A", "a", r.a), ("B", "b", r.b)):
         if ch is None:
             continue
-        if ch.noise == 0:
+        problem = r.problems.get(slot)
+        if problem is not None:
+            out.append(f"left out: {label} {problem.kind} ({problem.detail})")
+        elif ch.noise == 0:
             out.append(f"{label} is flat (no signal)")
-        if ch.saturated:
+        if ch.saturated and (problem is None or problem.kind != "railed"):
             out.append(f"{label} hit its limit {ch.saturated}x")
         if ch.bad_buffer_samples:
             out.append(f"{label} had {ch.bad_buffer_samples} bad samples (skipped)")
@@ -185,7 +188,7 @@ def table(cmp: Comparison) -> list[str]:
             notes.insert(0, "unusual spike ratio")
         if i in unusual_noise:
             notes.insert(0, "unusual noise ratio")
-        noise_ratio = f"{r.a.noise / r.b.noise:.2f}" if r.b.noise > 0 else "-"
+        noise_ratio = f"{r.a.noise / r.b.noise:.2f}" if r.b.noise > 0 and not r.problems else "-"
         lines.append((
             f"{i + 1:>4}  {r.path.name:<{name_w}}  {r.start.strftime(TIME):<16}  "
             f"{r.usable_s / 3600:>6.2f}  {rate(r.a.rate_per_hour):>{w}}  "
@@ -288,6 +291,9 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
     spikes = what == "spike"
     out: list[str] = []
     if not rows:
+        if any(f.problems for f in cmp.files):
+            return ["  No files could be compared: each had too little usable data or a"
+                    " channel that could not be measured (see above)."]
         return ["  No files had enough usable data to compare."]
     y = np.array([cmp.files[i].spike_ratio_log if spikes else cmp.files[i].noise_ratio_log
                   for i in rows])
@@ -399,8 +405,8 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
     for u in changes.unusual:
         i = rows[u.index]
         where = {"both": "the files on either side of it",
-                 "before": "the files before it (it is the most recent file)",
-                 "after": "the files after it (it is the first file)"}[u.side]
+                 "before": "the files before it (it is the last file compared)",
+                 "after": "the files after it (it is the first file compared)"}[u.side]
         out.append("")
         out.append(f"  UNUSUAL: {_describe_file(cmp, i)} has a {what} ratio "
                    f"{times_word(u.factor)} than {where}.")
@@ -426,6 +432,66 @@ def mode_line(cmp: Comparison) -> str:
     kind = {"bench": "bench test", "live": "live data"}[cmp.mode]
     custom = "" if MODES[cmp.mode] in (a, b) else ", with your own settings"
     return f"{cmp.mode} ({kind}{custom}): {rule}"
+
+
+def _ranges(numbers: list[int], most: int = 12) -> str:
+    """'4-6, 10, 12-14' for [4, 5, 6, 10, 12, 13, 14]."""
+    runs: list[list[int]] = []
+    for n in numbers:
+        if runs and n == runs[-1][-1] + 1:
+            runs[-1].append(n)
+        else:
+            runs.append([n])
+    text = [f"{r[0]}-{r[-1]}" if len(r) > 2 else ", ".join(map(str, r)) for r in runs]
+    return ", ".join(text[:most]) + (", ..." if len(text) > most else "")
+
+
+def unmeasured_section(cmp: Comparison) -> list[str]:
+    """Channels whose spikes and noise could not be measured, by channel and reason."""
+    out = []
+    for slot, name in (("a", cmp.channel_a), ("b", cmp.channel_b)):
+        for kind in ("no probe", "railed", "flat"):
+            hit = [(i, f) for i, f in enumerate(cmp.files)
+                   if not f.error and slot in f.problems and f.problems[slot].kind == kind]
+            if not hit:
+                continue
+            where = f"in {len(hit)} file(s) (#{_ranges([i + 1 for i, _ in hit])})"
+            chans = [getattr(f, slot) for _, f in hit]
+            if kind == "no probe":
+                slow = health.slow_thermistor(chans[0].name)
+                temps = sorted({round(f.setup.no_probe[slow], 2) for _, f in hit})
+                read = (f"{temps[0]:.2f}" if len(temps) == 1
+                        else f"{temps[0]:.2f} to {temps[-1]:.2f}")
+                out.append(f"  {name}: no probe {where}. {slow} read {read} C, beyond any water"
+                           " temperature, so nothing was connected and these spikes and noise"
+                           " are not a probe's.")
+            elif kind == "railed":
+                parts = []
+                share = max(ch.saturated / (ch.usable_s * ch.fs) for ch in chans)
+                if share >= health.RAILED_SHARE:
+                    parts.append(f"at the end of its range in up to {100 * share:.0f}% of the"
+                                 " samples")
+                over = [ch.threshold for ch in chans if ch.bits == 16 and ch.threshold > 2**15]
+                if over:
+                    parts.append(f"swinging so widely that its spike threshold reached"
+                                 f" {max(over):,.0f} counts, more than half its range")
+                out.append(f"  {name}: railed {where}: {'; '.join(parts)}. A spike could not"
+                           " stand out.")
+            else:
+                noises = [ch.noise for ch in chans]
+                how = ("it did not change at all" if max(noises) == 0
+                       else f"its noise was {min(noises):.2f} to {max(noises):.2f} counts, less"
+                            " than a working channel of its kind")
+                out.append(f"  {name}: flat {where}: {how} (dead or disconnected?).")
+    if not out:
+        return []
+    out.append("  These files are left out of the comparison. A channel that cannot show a"
+               " spike would look like the clean one, and its partner like the faulty one.")
+    railed = any(p.kind == "railed" for f in cmp.files for p in f.problems.values())
+    if railed and cmp.mode == "live" and cmp.options.min_pressure_dbar is None:
+        out.append("  If the instrument was out of the water for part of these files,"
+                   " --min-pressure (for example --min-pressure 5) leaves that time out.")
+    return ["", "Channels that could not be measured", *out]
 
 
 def channel_warnings(cmp: Comparison) -> list[str]:
@@ -611,7 +677,10 @@ def text_report(cmp: Comparison) -> str:
     span = (f"{good[0].start.strftime(TIME)} to {good[-1].start.strftime(TIME)} UTC"
             if good else "no readable files")
     unread = len(cmp.files) - len(good)
+    unmeasured = sum(bool(f.problems) for f in good)
     lines.append(f"  Files:      {len(cmp.files)} P-files, {span}; {len(cmp.used)} analysed"
+                 + (f", {unmeasured} left out (a channel could not be measured)"
+                    if unmeasured else "")
                  + (f", {unread} could not be read" if unread else ""))
     lines.append("")
     if good:
@@ -621,6 +690,7 @@ def text_report(cmp: Comparison) -> str:
                      "  Hours = usable data.")
     else:
         lines += table(cmp)
+    lines += unmeasured_section(cmp)
     lines += ["", "What the numbers say", "====================", "", "Spikes"]
     lines += findings(cmp, cmp.spikes, cmp.used, "spike", cmp.options.spike_changes.min_factor)
     lines += ["", "Noise"]
@@ -703,6 +773,10 @@ def write_csv(cmp: Comparison, path: Path) -> None:
         }
         row |= channel_cols("A", r.a)
         row |= channel_cols("B", r.b)
+        for label, slot in (("A", "a"), ("B", "b")):
+            if r.a is not None:
+                p = r.problems.get(slot)
+                row[f"{label}_not_measurable"] = f"{p.kind}: {p.detail}" if p else ""
         row["spikes_on_both_per_hour"] = round(both, 3) if math.isfinite(both) else ""
         ev, st = r.evidence, r.setup
         if ev is not None:

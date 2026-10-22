@@ -8,7 +8,7 @@ import pytest
 
 from rockland_noise.cli import main
 
-from .conftest import DATA, T0, add_bursts, bench_channels, noise
+from .conftest import DATA, T0, add_bursts, bench_channels, counts_for_temperature, noise
 
 SECONDS = 120  # each test file is two minutes long
 
@@ -363,3 +363,56 @@ def test_both_noises_rising_is_called_a_change_in_the_signal(maker, tmp_path, ca
     assert code == 0 and "Mode:       live" in out
     assert "JUMP between file 8 and file 9" in out
     assert "Both channels' noise rose together" in out and "not by itself a fault" in out
+
+
+def test_a_probe_that_dies_is_not_the_clean_channel(maker, tmp_path, capsys, cache):
+    """As Hydrographer MR330's T2 from file 107: T2 at the end of its conversion, T2_dT2
+    pinned. Its zero spikes must not make a jump that blames T1."""
+    folder = tmp_path / "bench"
+    folder.mkdir()
+    n = maker.fast_samples(SECONDS)
+    where = list(np.linspace(1000, n - 1000, 10).astype(int))
+    for k in range(16):
+        channels = bench_channels(maker, SECONDS, seed=k)
+        channels["T1_dT1"] = add_bursts(noise(n, 3.0, -20, seed=k), where)
+        if k < 8:
+            channels["T2_dT2"] = add_bursts(noise(n, 3.0, -20, seed=100 + k),
+                                            [w + 500 for w in where])
+        else:  # no probe: four values near the end of the range
+            channels["T2"] = np.full(SECONDS * 64, counts_for_temperature(maker, "T2", -16.05))
+            channels["T2_dT2"] = -32347 + np.random.default_rng(k).integers(0, 4, n)
+        maker.write(folder / f"B_{k + 1:04d}.p", start=T0 + timedelta(hours=k), seconds=SECONDS,
+                    channels=channels)
+    csv_path = tmp_path / "out.csv"
+    code, out, err = run(capsys, "compare", "T1_dT1", "T2_dT2", folder, "--csv", csv_path, *cache)
+    assert code == 0, err
+    assert "JUMP" not in out
+    assert "16 P-files" in out and "8 analysed, 8 left out (a channel could not be measured)" in out
+    assert "Channels that could not be measured" in out
+    assert "T2_dT2: no probe in 8 file(s) (#9-16). T2 read " in out
+    assert "left out: B no probe (T2 reads " in out
+    rows = list(csv.DictReader(csv_path.open()))
+    assert rows[8]["analysed"] == "no" and rows[8]["B_not_measurable"].startswith("no probe: T2")
+    assert rows[0]["analysed"] == "yes" and rows[0]["B_not_measurable"] == ""
+    assert "T2 no probe (" in rows[8]["setup_evidence"]
+
+
+def test_a_railed_channel_is_not_the_clean_one(maker, tmp_path, capsys, cache):
+    """As VMP SN 465's sh1 in the overnight hangs: at +-32767 in a share of its samples."""
+    folder = tmp_path / "live"
+    folder.mkdir()
+    n = maker.fast_samples(SECONDS)
+    for k in range(12):
+        sh1 = noise(n, 1.1, seed=k)
+        if 4 <= k < 8:  # 5% of the samples at the end of the range, in 30 stretches
+            for a in np.linspace(1000, n - 1000, 30).astype(int):
+                sh1[a:a + n // 600] = 32767
+        maker.write(folder / f"L_{k + 1:04d}.p", start=T0 + timedelta(hours=k), seconds=SECONDS,
+                    channels={"sh1": sh1, "sh2": noise(n, 1.1, seed=50 + k)})
+    code, out, _ = run(capsys, "compare", "sh1", "sh2", folder, *cache)
+    assert code == 0 and "Mode:       live" in out
+    assert "sh1: railed in 4 file(s) (#5-8): at the end of its range in up to 5% of the" in out
+    assert "--min-pressure (for example --min-pressure 5) leaves that time out" in out
+    assert "left out: A railed (5% of its samples at the end of its range)" in out
+    assert "hit its limit" not in out
+    assert "JUMP" not in out and "UNUSUAL" not in out

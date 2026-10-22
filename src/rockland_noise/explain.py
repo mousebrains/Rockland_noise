@@ -74,6 +74,25 @@ wiggle. The program counts how many start in each file.
     counts in those files cannot be compared with the others; the report
     says so.
 
+Channels that could not be measured
+-----------------------------------
+A channel with no spikes is only clean if it could have shown one. The report
+lists, and leaves out of the comparison, the files where a channel could not:
+
+  no probe  The thermistor's slow channel (T1 for T1_dT1) reads far beyond
+            any water temperature (-16.05 or 54.75 C): nothing is connected.
+            The fast channel then sits still, or swings about by itself;
+            either way it says nothing about a probe.
+  railed    The channel sat at the end of its range in at least 2% of its
+            samples, or swung so widely that its spike threshold was more
+            than half its range. Time near the surface or out of the
+            water can do this; --min-pressure leaves that time out.
+  flat      The channel did not change at all, or a fast thermistor channel
+            moved by less than one count (a working one moves by 2 or more).
+
+Without this, a dead channel would look like the clean one and its healthy
+partner like the faulty one.
+
 Bench or live?  (worked out for you; --mode to choose yourself)
 ---------------------------------------------------------------
   bench  Rockland TEST PROBES are on (open-circuit shear probes and
@@ -203,6 +222,7 @@ number for every file, including some extra ones not shown in the table:
   *_spikes_shared               spikes with one on the other channel within 0.1 s
   *_spikes_only_per_hour        spikes per hour on this channel alone
   *_worst_minute_range_counts   the checklist range in the worst minute
+  *_not_measurable              why that channel could not be measured
   *_spikes_starting_upward_pct  % of spikes whose first swing was upward
                                 (real signal is usually about half and half;
                                 some electrical faults are almost all one way)
