@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from . import checklist, health
-from .changes import Changes, Jump, neighbours
-from .compare import Comparison, FileResult
+from .changes import Changes, Jump, Switching, neighbours
+from .compare import EXTRA_SPIKES_PER_HOUR, Comparison, FileResult
 from .spikes import MODES, SHARED_WINDOW_S
 
 TIME = "%Y-%m-%d %H:%M"
@@ -83,7 +83,7 @@ def times_word(f: float) -> str:
 def spike_ratio_text(r: FileResult) -> str:
     """The spike ratio for the table: a number, or who had spikes."""
     a, b = r.a, r.b
-    if a is None or b is None or r.problems:
+    if a is None or b is None or r.problems or r.usable_s <= 0:
         return "-"
     if a.spikes == 0 and b.spikes == 0:
         return "none"
@@ -114,7 +114,11 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
     out = []
     if r.error:
         return [r.error]
-    if r.usable_s < cmp.options.min_usable_s:
+    if r.usable_s <= 0:
+        deeper = cmp.options.min_pressure_dbar
+        out.append("no usable data, left out" + (f" (never deeper than {deeper:g} dbar?)"
+                                                 if deeper is not None else ""))
+    elif r.usable_s < cmp.options.min_usable_s:
         out.append("too little usable data, left out")
     for label, slot, ch in (("A", "a", r.a), ("B", "b", r.b)):
         if ch is None:
@@ -136,7 +140,7 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
             limit = checklist.limit_for(ch.name) if ch else None
             if limit and checklist.problems(ch, limit):
                 out.append(f"{label} outside bench checklist")
-        if r.usable_s < checklist.MIN_FILE_SECONDS:
+        if 0 < r.usable_s < checklist.MIN_FILE_SECONDS:
             out.append("shorter than the 60 s the checklist asks for")
     if r.setup is not None:
         out += [w.split(":")[0].replace(" is ", " ") for w in r.setup.warnings]
@@ -189,12 +193,13 @@ def table(cmp: Comparison) -> list[str]:
         if i in unusual_noise:
             notes.insert(0, "unusual noise ratio")
         noise_ratio = f"{r.a.noise / r.b.noise:.2f}" if r.b.noise > 0 and not r.problems else "-"
+        noise_a, noise_b = (f"{x:.2f}" if math.isfinite(x) else "-" for x in (r.a.noise, r.b.noise))
         lines.append((
             f"{i + 1:>4}  {r.path.name:<{name_w}}  {r.start.strftime(TIME):<16}  "
             f"{r.usable_s / 3600:>6.2f}  {rate(r.a.rate_per_hour):>{w}}  "
             f"{rate(r.b.rate_per_hour):>{w}}  {rate(both_per_hour(r)):>6}  "
             f"{spike_ratio_text(r):>8}  "
-            f"{r.a.noise:>{w}.2f}  {r.b.noise:>{w}.2f}  {noise_ratio:>8}  {'; '.join(notes)}"
+            f"{noise_a:>{w}}  {noise_b:>{w}}  {noise_ratio:>8}  {'; '.join(notes)}"
         ).rstrip())
         previous = r.start
     bad = [r for r in cmp.files if r.error]
@@ -291,6 +296,15 @@ def _channel_words(cmp: Comparison, before: list[int], after: list[int], spikes:
     return f"{parts[0]} {unit}; {parts[1]}."
 
 
+def _not_alike(spikes: bool) -> str:
+    """Each channel's median and the middle file disagree by more than min_factor squared."""
+    busy = "busy" if spikes else "noisy"
+    return (f"  These two do not agree because the files differ a lot from one another: the"
+            f" channels were {busy} in different files, so no one file is typical. Look at the"
+            " table, and compare files of one kind (bench tests, casts, deployments)"
+            " separately.")
+
+
 def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
              min_factor: float) -> list[str]:
     """Plain-language description of the jumps, trends and unusual files in one ratio."""
@@ -303,19 +317,34 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         return ["  No files had enough usable data to compare."]
     y = np.array([cmp.files[i].spike_ratio_log if spikes else cmp.files[i].noise_ratio_log
                   for i in rows])
-    typical = 10 ** float(np.median(y))
+    # The middle file by ratio (the lower of the two middle ones): its numbers
+    # belong together, unlike each channel's median, which may come from
+    # different files.
+    k = int(np.argsort(y, kind="stable")[(len(rows) - 1) // 2])
+    middle = cmp.files[rows[k]]
     a, b = cmp.channel_a, cmp.channel_b
+    where = f"In the middle file by {what} ratio, {_describe_file(cmp, rows[k])}"
     if spikes:
         ra, rb = _median_rates(cmp, rows)
         if ra == 0 and rb == 0:
             out.append(f"  In a typical file neither {a} nor {b} had any spikes.")
         else:
             out.append(f"  In a typical file {a} had about {rate(ra)} spikes per hour and "
-                       f"{b} about {rate(rb)}.")
-            if rb > 0 and ra > 0:
-                more, less, f = (a, b, typical) if typical >= 1 else (b, a, 1 / typical)
-                out.append(f"  So {more} had about {factor(f)} times as many spikes as {less}"
-                           f" (spike ratio {factor(typical)}).")
+                       f"{b} about {rate(rb)} (each channel's median over the {len(rows)}"
+                       " files).")
+            xa, xb = middle.a.rate_per_hour, middle.b.rate_per_hour
+            if xa == 0 and xb == 0:
+                out.append(f"  {where}, neither had spikes.")
+            elif xb == 0 or xa == 0:
+                only, x = (a, xa) if xb == 0 else (b, xb)
+                out.append(f"  {where}, only {only} had spikes ({rate(x)} per hour).")
+            else:
+                more, less, f = (a, b, xa / xb) if xa >= xb else (b, a, xb / xa)
+                out.append(f"  {where}, {a} had {rate(xa)} spikes per hour and {b} {rate(xb)}:"
+                           f" {more} had {factor(f)} times as many as {less}.")
+            unpaired = math.log10((ra + EXTRA_SPIKES_PER_HOUR) / (rb + EXTRA_SPIKES_PER_HOUR))
+            if abs(unpaired - y[k]) > 2 * math.log10(min_factor):
+                out.append(_not_alike(spikes))
         for name, ch in ((a, "a"), (b, "b")):
             if all(getattr(cmp.files[i], ch).spikes == 0 for i in rows):
                 out.append(f"  {name} had no spikes at all in any of the {len(rows)} files.")
@@ -328,7 +357,12 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
     else:
         na, nb = _median_noise(cmp, rows)
         out.append(f"  In a typical file the noise was {na:.2f} counts on {a} and {nb:.2f} on"
-                   f" {b}: a noise ratio of {typical:.2f}.")
+                   f" {b} (each channel's median over the {len(rows)} files).")
+        xa, xb = middle.a.noise, middle.b.noise
+        out.append(f"  {where}, it was {xa:.2f} counts on {a} and {xb:.2f} on {b}: a noise"
+                   f" ratio of {xa / xb:.2f}.")
+        if na > 0 and nb > 0 and abs(math.log10(na / nb) - y[k]) > 2 * math.log10(min_factor):
+            out.append(_not_alike(spikes))
         if cmp.mode == "live":
             out.append("  In live data a real probe's 'noise' includes real signal, so it rises"
                        " and falls with the water. When that signal is far above the electronic"
@@ -423,8 +457,42 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         if both:
             out.append(f"    {both}")
 
-    if not (changes.jumps or changes.trends or changes.unusual):
+    for sw in changes.switching:
+        out += _switching_words(cmp, sw, rows, y, what)
+
+    if not (changes.jumps or changes.trends or changes.unusual or changes.switching):
         out.append(f"  No jumps, trends or unusual files in the {what} ratio.")
+    return out
+
+
+def _switching_words(cmp: Comparison, sw: Switching, rows: list[int], y: np.ndarray,
+                     what: str) -> list[str]:
+    spikes = what == "spike"
+    first, last = rows[sw.first], rows[sw.last]
+    high, low = [rows[i] for i in sw.high], [rows[i] for i in sw.low]
+    if spikes:
+        (ha, hb), (la, lb) = _median_rates(cmp, high), _median_rates(cmp, low)
+        unit, fmt = "spikes per hour", rate
+    else:
+        (ha, hb), (la, lb) = _median_noise(cmp, high), _median_noise(cmp, low)
+        unit, fmt = "counts", lambda x: f"{x:.2f}"
+    out = ["",
+           f"  SWITCHING, files {first + 1} to {last + 1} ({cmp.files[first].start:%Y-%m-%d} to"
+           f" {cmp.files[last].start:%Y-%m-%d}):",
+           f"    The {what} ratio went back and forth {sw.switches} times between about"
+           f" {factor(10 ** sw.level(y, sw.high))} ({len(high)} files) and about"
+           f" {factor(10 ** sw.level(y, sw.low))} ({len(low)} files). That is too often for the"
+           " jump search, which needs each level to last about 15 to 20 files.",
+           f"    {cmp.channel_a}: about {fmt(ha)} {unit} in the high files and {fmt(la)} in the low"
+           f" ones; {cmp.channel_b}: about {fmt(hb)} and {fmt(lb)}."]
+    both = _both_noises_changed(cmp, low, high, spikes)
+    if both:
+        out.append(f"    {both}")
+    out.append("    A fault that comes and goes (a connector or probe), or two kinds of files mixed"
+               " together (bench tests and casts, say), looks like this.")
+    if cmp.mode == "live":
+        out.append("    In live data the water can do it too: real probes follow it, and one may"
+                   " respond more than the other.")
     return out
 
 
@@ -736,6 +804,13 @@ def write_csv(cmp: Comparison, path: Path) -> None:
     unusual_n = {cmp.noise_used[u.index] for u in cmp.noise.unusual}
     trend_s = {cmp.used[i] for t in cmp.spikes.trends for i in range(t.first, t.last + 1)}
     trend_n = {cmp.noise_used[i] for t in cmp.noise.trends for i in range(t.first, t.last + 1)}
+
+    def switch_levels(changes: Changes, rows: list[int]) -> dict[int, str]:
+        return {rows[i]: level for sw in changes.switching
+                for level, where in (("high", sw.high), ("low", sw.low)) for i in where}
+
+    switch_s = switch_levels(cmp.spikes, cmp.used)
+    switch_n = switch_levels(cmp.noise, cmp.noise_used)
     used = set(cmp.used)
 
     def channel_cols(prefix: str, ch) -> dict:
@@ -823,6 +898,10 @@ def write_csv(cmp: Comparison, path: Path) -> None:
             flags.append("unusual spike ratio")
         if i in unusual_n:
             flags.append("unusual noise ratio")
+        if i in switch_s:
+            flags.append(f"{switch_s[i]} in a switching spike ratio")
+        if i in switch_n:
+            flags.append(f"{switch_n[i]} in a switching noise ratio")
         row["findings"] = "; ".join(flags)
         row["notes"] = " | ".join([r.error] if r.error else r.notes)
         rows.append(row)

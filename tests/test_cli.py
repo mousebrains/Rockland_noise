@@ -61,7 +61,7 @@ def test_sorted_by_time_not_by_name_or_order_given(maker, tmp_path, capsys, cach
     paths = write_set(maker, tmp_path / "data", [0, 5, 10])
     code, out, _ = run(capsys, "compare", "t1_dt1", "T2_DT2", *reversed(paths), *cache)
     assert code == 0
-    lines = [ln for ln in out.splitlines() if "TEST_000" in ln]
+    lines = [ln for ln in out.splitlines() if "TEST_000" in ln and ln.split()[0].isdigit()]
     assert [ln.split()[1] for ln in lines] == ["TEST_0001.p", "TEST_0002.p", "TEST_0003.p"]
 
 
@@ -438,3 +438,65 @@ def test_a_gap_full_of_left_out_files_is_not_called_empty(maker, tmp_path, capsy
     assert code == 0
     assert "The files compared fall in 2 separate stretches of time" in out
     assert "The files fall in" not in out
+
+
+def test_files_with_no_usable_data_say_so(maker, tmp_path, capsys, cache):
+    """--min-pressure deeper than any file: no 'nan', no ratio, no checklist length complaint."""
+    write_bench_set(maker, tmp_path / "bench", [0, 0])
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "bench",
+                       "--min-pressure", 100, *cache)
+    assert code == 0
+    rows = [ln for ln in out.splitlines() if "BENCH_000" in ln and ln.split()[0].isdigit()]
+    assert len(rows) == 2
+    for row in rows:
+        assert "nan" not in row and "none" not in row and "shorter than" not in row
+        assert row.split()[4:11] == ["0.00", "-", "-", "-", "-", "-", "-"]
+        assert "no usable data, left out (never deeper than 100 dbar?)" in row
+
+
+def test_a_fault_that_comes_and_goes_is_called_switching(maker, tmp_path, capsys, cache):
+    """T1 busy for 3 files, quiet for 3, and so on: too quick for a jump."""
+    n = maker.fast_samples(SECONDS)
+    busy = list(np.linspace(1000, n - 1000, 40).astype(int))
+    bursts = [busy if k // 3 % 2 else [busy[0]] for k in range(24)]
+    write_bench_bursts(maker, tmp_path / "data", bursts, [[]] * 24)
+    csv_path = tmp_path / "out.csv"
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", "--csv",
+                       csv_path, *cache)
+    assert code == 0 and "JUMP" not in out
+    assert "SWITCHING, files 1 to 24" in out
+    assert "The spike ratio went back and forth 7 times between about 1,201 (12 files) and" \
+        " about 31 (12 files)" in out
+    assert "T1_dT1: about 1,200 spikes per hour in the high files and 30 in the low ones;" \
+        " T2_dT2: about 0 and 0." in out
+    rows = list(csv.DictReader(csv_path.open()))
+    assert rows[0]["findings"] == "low in a switching spike ratio"
+    assert rows[3]["findings"] == "high in a switching spike ratio"
+
+
+def test_the_summary_quotes_numbers_that_belong_together(maker, tmp_path, capsys, cache):
+    """30 and 6 spikes per hour in every file: the summary says 5, as the table does (the +1
+    per hour used for the jump search would make it 4.4)."""
+    n = maker.fast_samples(600)
+    t1 = [list(np.linspace(1000, n - 1000, 5).astype(int))] * 8
+    t2 = [[n // 2]] * 8
+    write_bench_bursts(maker, tmp_path / "data", t1, t2, seconds=600)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache)
+    assert code == 0
+    assert "In a typical file T1_dT1 had about 30 spikes per hour and T2_dT2 about 6.0 (each" \
+        " channel's median over the 8 files)." in out
+    assert "T1_dT1 had 30 spikes per hour and T2_dT2 6.0: T1_dT1 had 5.0 times as many as" \
+        " T2_dT2." in out
+    assert "4.4" not in out and "do not agree" not in out
+
+
+def test_channels_busy_in_different_files_are_not_summed_up_as_alike(maker, tmp_path, capsys,
+                                                                     cache):
+    n = maker.fast_samples(SECONDS)
+    busy = list(np.linspace(1000, n - 1000, 40).astype(int))
+    write_bench_bursts(maker, tmp_path / "data", [busy] * 3 + [[]] * 3, [[]] * 3 + [busy] * 3)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache)
+    assert code == 0
+    assert "T1_dT1 had about 600 spikes per hour and T2_dT2 about 600" in out
+    assert "only T2_dT2 had spikes (1,200 per hour)" in out
+    assert "These two do not agree because the files differ a lot from one another" in out

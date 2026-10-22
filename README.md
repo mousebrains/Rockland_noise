@@ -125,7 +125,8 @@ fault.
    2  RIOT_SL684_0531.p  2026-10-19 04:16    0.70     2,930         0       0    A only      3.96      3.24      1.22  A outside bench checklist
    ...
 Spikes
-  In a typical file T1_dT1 had about 1,504 spikes per hour and T2_dT2 about 0.
+  In a typical file T1_dT1 had about 1,504 spikes per hour and T2_dT2 about 0 (each channel's median over the 12 files).
+  In the middle file by spike ratio, file 9 (RIOT_SL684_0538.p, 2026-10-20 05:10 UTC), only T1_dT1 had spikes (891 per hour).
   under 1% of T1_dT1's spikes came within 0.1 s of one on T2_dT2; 87% of T2_dT2's spikes came within 0.1 s of one on T1_dT1 (about 9% would by chance at these rates).
   ...
 Bench test
@@ -293,6 +294,17 @@ file by file in time order:
   file-to-file scatter. For the spike ratio, one of the file's two spike
   counts must also be beyond chance (Poisson, below 0.001) at its neighbours'
   rates and its own length, so a short file with a spike or two is not flagged.
+* **Switching**: within a run of files between jumps, at least 20% of the files
+  (and 3) more than `--min-factor` above the run's median, as many that far
+  below, the two groups at least `--min-factor`² apart, taking turns at least
+  3 times. The jump search misses such changes: two levels 10× apart that took
+  turns every 10 files were never found as jumps, every 20 files always. No
+  false alarms in 200 series of independent and 200 of strongly alike files.
+  On the AEM1-G tank set it marks MR433's T1 fault, which no jump caught: T1
+  went back and forth between about 1,355 and 35 spikes per hour, 4 times in
+  32 files. It also marks the ARCTERX Wake sets that mix bench tests and
+  casts, and a stretch of each Hydrographer mooring (MR330's noise ratio,
+  MR429's spike ratio), where the water or one probe may be the cause.
 * **How sure**: the shuffle p-value for jumps (at best "none of 1,999
   shuffles"), Kendall's test for trends. Both are approximate (the
   neighbour-similarity allowance is an estimate) and every file counts the

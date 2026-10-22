@@ -34,11 +34,23 @@ Trend
 Unusual file
     One file that differs from the files on both sides of it, in the same
     direction, by at least ``min_factor`` squared (and by much more than the
-    usual file-to-file scatter). The first and the most recent file are
-    compared with their one available side. The caller can add a test of its
-    own (``check``): for spike ratios, that the file's spike counts are beyond
-    what chance gives for its length, so a short file with a few spikes is
-    not called unusual.
+    usual file-to-file scatter). The second and the second-to-last file
+    have only one file on their short side, which they are compared with;
+    the first and the most recent file are compared with their one
+    available side. The caller can add a test of its own (``check``): for
+    spike ratios, that the file's spike counts are beyond what chance gives
+    for its length, so a short file with a few spikes is not called unusual.
+
+Switching
+    Inside a run of files between jumps, the ratio switches back and forth
+    between two clear levels: at least 20% of the files (and 3) more than
+    ``min_factor`` above the run's median, as many more than ``min_factor``
+    below, the two groups' medians at least ``min_factor`` squared apart,
+    and at least 3 switches between them in time. The jump search cannot
+    follow switches only a few files apart (two levels 10x apart, scattered
+    by 0.15 in log10, were never found as jumps when they took turns every
+    10 files, and always when every 20), and an intermittent fault or two
+    kinds of files mixed together look like this.
 
 Every file counts the same in the jump and trend search, however long it is.
 That is safe because the size of a jump is judged on the median of the files
@@ -119,11 +131,25 @@ class Unusual:
 
 
 @dataclass(slots=True)
+class Switching:
+    first: int  # positions of the first and last files of the run
+    last: int
+    high: list[int]  # positions of the files at the high level...
+    low: list[int]  # ...and at the low level
+    switches: int  # times the ratio went from one level to the other
+
+    def level(self, y: np.ndarray, which: list[int]) -> float:
+        """Typical (median) log10 value of the high or the low files."""
+        return float(np.median(y[which]))
+
+
+@dataclass(slots=True)
 class Changes:
     n: int
     jumps: list[Jump] = field(default_factory=list)
     trends: list[Trend] = field(default_factory=list)
     unusual: list[Unusual] = field(default_factory=list)
+    switching: list[Switching] = field(default_factory=list)
     segments: list[tuple[int, int]] = field(default_factory=list)  # [first, last) runs
     groups: list[tuple[int, int]] = field(default_factory=list)  # [first, last) by time gaps
     inflation: float = 1.0  # see _inflation
@@ -359,7 +385,7 @@ def _find_unusual(y: np.ndarray, s: ChangeSettings, check: Check | None = None) 
     found = []
     for i in range(y.size):
         before, after = y[max(0, i - 3):i], y[i + 1:i + 4]
-        if before.size >= 2 and after.size >= 2:
+        if before.size and after.size and before.size + after.size >= 3:
             d_before, d_after = y[i] - np.median(before), y[i] - np.median(after)
             if d_before * d_after > 0 and min(abs(d_before), abs(d_after)) >= limit:
                 d = math.copysign(min(abs(d_before), abs(d_after)), d_before)
@@ -375,6 +401,31 @@ def _find_unusual(y: np.ndarray, s: ChangeSettings, check: Check | None = None) 
     if check is not None:
         found = [u for u in found if check(u.index, neighbours(u.index, y.size), u.difference > 0)]
     return found
+
+
+SWITCH_SHARE = 0.2  # each level holds at least this share of a run's files...
+SWITCH_FILES = 3  # ...and at least this many
+MIN_SWITCHES = 3  # one jump is 1 switch, a temporary change 2
+SWITCH_RUN = 8  # files needed in a run to look for switching
+
+
+def _find_switching(y: np.ndarray, first: int, s: ChangeSettings) -> Switching | None:
+    """Two clear levels taking turns within one run of files (see the module docstring)."""
+    if y.size < SWITCH_RUN:
+        return None
+    step = math.log10(s.min_factor)
+    middle = float(np.median(y))
+    high, low = y > middle + step, y < middle - step
+    if min(high.sum(), low.sum()) < max(SWITCH_FILES, SWITCH_SHARE * y.size):
+        return None
+    if np.median(y[high]) - np.median(y[low]) < 2 * step:
+        return None
+    order = [h for h, lo in zip(high, low, strict=True) if h or lo]
+    switches = sum(a != b for a, b in itertools.pairwise(order))
+    if switches < MIN_SWITCHES:
+        return None
+    return Switching(first, first + y.size - 1, (first + np.flatnonzero(high)).tolist(),
+                     (first + np.flatnonzero(low)).tolist(), switches)
 
 
 def neighbours(i: int, n: int) -> np.ndarray:
@@ -447,4 +498,10 @@ def find_changes(days: np.ndarray, y: np.ndarray, settings: ChangeSettings | Non
             trend = _find_trend(days[lo:hi], y_all[lo:hi], lo, s, out.inflation)
             if trend is not None:
                 out.trends.append(trend)
+
+    # 4. Switching between two levels, which the jump search cannot follow.
+    for a, b in out.segments:
+        switching = _find_switching(y_all[a:b], a, s)
+        if switching is not None:
+            out.switching.append(switching)
     return out

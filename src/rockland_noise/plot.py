@@ -199,15 +199,27 @@ def plot(cmp: Comparison, path: Path) -> None:
     _ratio_panel(axes[3], cmp, nrows, noise_y, cmp.noise, f"noise ratio {a}/{b}")
 
     # Long gaps in time: a hairline and a label, so the even spacing of files
-    # on the x-axis does not hide them.
+    # on the x-axis does not hide them. Gaps closer together than a label is
+    # wide share one label ("3 gaps of 6 to 11 days").
+    width = 60 / 72 * fig.dpi
+    labels: list[tuple[float, float, list[float], bool]] = []  # x, in pixels, days, all empty
     for g0, _ in cmp.spikes.groups[1:]:
         xg = 0.5 * (x[g0 - 1] + x[g0])
         gap = (files[g0].start - files[g0 - 1].start).total_seconds() / 86400
         for ax in axes:
             ax.axvline(xg, color=MUTED, linewidth=0.8, zorder=1)
-        between = "files" if x[g0] - x[g0 - 1] == 1 else "files compared"
-        axes[0].annotate(f"{gap:.0f} days\nwithout {between}", (xg, 0), xytext=(3, 3),
-                         textcoords="offset points", fontsize=7, color=MUTED)
+        empty = x[g0] - x[g0 - 1] == 1  # no file left out in between
+        px = axes[0].transData.transform((xg, 0))[0]
+        if labels and px - labels[-1][1] < width:
+            labels[-1] = (*labels[-1][:2], [*labels[-1][2], gap], labels[-1][3] and empty)
+        else:
+            labels.append((xg, px, [gap], empty))
+    for xg, _, gaps, empty in labels:
+        between = "files" if empty else "files compared"
+        text = (f"{gaps[0]:.0f} days\nwithout {between}" if len(gaps) == 1
+                else f"{len(gaps)} gaps of\n{min(gaps):.0f} to {max(gaps):.0f} days")
+        axes[0].annotate(text, (xg, 0), xytext=(3, 3), textcoords="offset points", fontsize=7,
+                         color=MUTED)
 
     # Files left out because a channel could not be measured: a pale band
     # over each run of them, so the lines drawn across are not mistaken for data.

@@ -52,6 +52,14 @@ def test_one_odd_file_is_unusual_not_a_jump():
     assert [(u.index, u.side) for u in c.unusual] == [(12, "both")]
 
 
+@pytest.mark.parametrize("i", [1, N - 2])
+def test_second_and_second_to_last_files_are_looked_at_too(i):
+    y = NOISE.copy()
+    y[i] += 1.5
+    c = find_changes(DAYS, y)
+    assert [(u.index, u.side) for u in c.unusual] == [(i, "both")]
+
+
 def test_newest_file_is_compared_with_the_ones_before():
     y = NOISE.copy()
     y[-1] += 1.5
@@ -126,3 +134,29 @@ def test_the_callers_check_can_veto_an_unusual_file():
     c = find_changes(DAYS, y, check=check)
     assert not c.unusual
     assert seen == [(12, [9, 10, 11, 13, 14, 15], True)]
+
+
+@pytest.mark.parametrize("every", [3, 10])
+def test_switching_back_and_forth_is_found(every):
+    """Two levels 10x apart taking turns every few files: no jump, but SWITCHING."""
+    n = 60
+    days = np.arange(n) / 6.0
+    y = np.random.default_rng(4).normal(0, 0.15, n) + np.where(np.arange(n) // every % 2, 1.0, 0)
+    c = find_changes(days, y)
+    assert not c.jumps
+    assert len(c.switching) == 1
+    sw = c.switching[0]
+    assert (sw.first, sw.last) == (0, n - 1) and sw.switches >= 5
+    assert sw.level(y, sw.high) - sw.level(y, sw.low) == pytest.approx(1.0, abs=0.15)
+
+
+def test_no_switching_in_steady_or_wandering_files():
+    assert not find_changes(DAYS, NOISE).switching
+    for seed in range(50):
+        rng = np.random.default_rng(900 + seed)
+        y = np.zeros(N)
+        for i in range(1, N):
+            y[i] = 0.7 * y[i - 1] + rng.normal(0, 0.15)
+        assert not find_changes(DAYS, y).switching
+    one_jump = NOISE + np.where(STEP >= 15, 1.0, 0)
+    assert not find_changes(DAYS, one_jump).switching
