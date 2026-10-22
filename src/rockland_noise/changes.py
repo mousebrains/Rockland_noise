@@ -34,11 +34,12 @@ Trend
 Unusual file
     One file that differs from the files on both sides of it, in the same
     direction, by at least ``min_factor`` squared (and by much more than the
-    usual file-to-file scatter). The first and the most recent file are
-    compared with their one available side. The caller can add a test of its
-    own (``check``): for spike ratios, that the file's spike counts are beyond
-    what chance gives for its length, so a short file with a few spikes is
-    not called unusual.
+    usual file-to-file scatter). The second and the second-to-last file
+    have only one file on their short side, which they are compared with;
+    the first and the most recent file are compared with their one
+    available side. The caller can add a test of its own (``check``): for
+    spike ratios, that the file's spike counts are beyond what chance gives
+    for its length, so a short file with a few spikes is not called unusual.
 
 Every file counts the same in the jump and trend search, however long it is.
 That is safe because the size of a jump is judged on the median of the files
@@ -359,7 +360,7 @@ def _find_unusual(y: np.ndarray, s: ChangeSettings, check: Check | None = None) 
     found = []
     for i in range(y.size):
         before, after = y[max(0, i - 3):i], y[i + 1:i + 4]
-        if before.size >= 2 and after.size >= 2:
+        if before.size and after.size and before.size + after.size >= 3:
             d_before, d_after = y[i] - np.median(before), y[i] - np.median(after)
             if d_before * d_after > 0 and min(abs(d_before), abs(d_after)) >= limit:
                 d = math.copysign(min(abs(d_before), abs(d_after)), d_before)

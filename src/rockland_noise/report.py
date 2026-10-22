@@ -83,7 +83,7 @@ def times_word(f: float) -> str:
 def spike_ratio_text(r: FileResult) -> str:
     """The spike ratio for the table: a number, or who had spikes."""
     a, b = r.a, r.b
-    if a is None or b is None or r.problems:
+    if a is None or b is None or r.problems or r.usable_s <= 0:
         return "-"
     if a.spikes == 0 and b.spikes == 0:
         return "none"
@@ -114,7 +114,11 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
     out = []
     if r.error:
         return [r.error]
-    if r.usable_s < cmp.options.min_usable_s:
+    if r.usable_s <= 0:
+        deeper = cmp.options.min_pressure_dbar
+        out.append("no usable data, left out" + (f" (never deeper than {deeper:g} dbar?)"
+                                                 if deeper is not None else ""))
+    elif r.usable_s < cmp.options.min_usable_s:
         out.append("too little usable data, left out")
     for label, slot, ch in (("A", "a", r.a), ("B", "b", r.b)):
         if ch is None:
@@ -136,7 +140,7 @@ def notes_for(r: FileResult, cmp: Comparison) -> list[str]:
             limit = checklist.limit_for(ch.name) if ch else None
             if limit and checklist.problems(ch, limit):
                 out.append(f"{label} outside bench checklist")
-        if r.usable_s < checklist.MIN_FILE_SECONDS:
+        if 0 < r.usable_s < checklist.MIN_FILE_SECONDS:
             out.append("shorter than the 60 s the checklist asks for")
     if r.setup is not None:
         out += [w.split(":")[0].replace(" is ", " ") for w in r.setup.warnings]
@@ -189,12 +193,13 @@ def table(cmp: Comparison) -> list[str]:
         if i in unusual_noise:
             notes.insert(0, "unusual noise ratio")
         noise_ratio = f"{r.a.noise / r.b.noise:.2f}" if r.b.noise > 0 and not r.problems else "-"
+        noise_a, noise_b = (f"{x:.2f}" if math.isfinite(x) else "-" for x in (r.a.noise, r.b.noise))
         lines.append((
             f"{i + 1:>4}  {r.path.name:<{name_w}}  {r.start.strftime(TIME):<16}  "
             f"{r.usable_s / 3600:>6.2f}  {rate(r.a.rate_per_hour):>{w}}  "
             f"{rate(r.b.rate_per_hour):>{w}}  {rate(both_per_hour(r)):>6}  "
             f"{spike_ratio_text(r):>8}  "
-            f"{r.a.noise:>{w}.2f}  {r.b.noise:>{w}.2f}  {noise_ratio:>8}  {'; '.join(notes)}"
+            f"{noise_a:>{w}}  {noise_b:>{w}}  {noise_ratio:>8}  {'; '.join(notes)}"
         ).rstrip())
         previous = r.start
     bad = [r for r in cmp.files if r.error]

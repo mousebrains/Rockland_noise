@@ -52,6 +52,14 @@ def test_one_odd_file_is_unusual_not_a_jump():
     assert [(u.index, u.side) for u in c.unusual] == [(12, "both")]
 
 
+@pytest.mark.parametrize("i", [1, N - 2])
+def test_second_and_second_to_last_files_are_looked_at_too(i):
+    y = NOISE.copy()
+    y[i] += 1.5
+    c = find_changes(DAYS, y)
+    assert [(u.index, u.side) for u in c.unusual] == [(i, "both")]
+
+
 def test_newest_file_is_compared_with_the_ones_before():
     y = NOISE.copy()
     y[-1] += 1.5

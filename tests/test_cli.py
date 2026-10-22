@@ -438,3 +438,17 @@ def test_a_gap_full_of_left_out_files_is_not_called_empty(maker, tmp_path, capsy
     assert code == 0
     assert "The files compared fall in 2 separate stretches of time" in out
     assert "The files fall in" not in out
+
+
+def test_files_with_no_usable_data_say_so(maker, tmp_path, capsys, cache):
+    """--min-pressure deeper than any file: no 'nan', no ratio, no checklist length complaint."""
+    write_bench_set(maker, tmp_path / "bench", [0, 0])
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "bench",
+                       "--min-pressure", 100, *cache)
+    assert code == 0
+    rows = [ln for ln in out.splitlines() if "BENCH_000" in ln and ln.split()[0].isdigit()]
+    assert len(rows) == 2
+    for row in rows:
+        assert "nan" not in row and "none" not in row and "shorter than" not in row
+        assert row.split()[4:11] == ["0.00", "-", "-", "-", "-", "-", "-"]
+        assert "no usable data, left out (never deeper than 100 dbar?)" in row
