@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from . import checklist, health
-from .changes import Changes, Jump, neighbours
+from .changes import Changes, Jump, Switching, neighbours
 from .compare import Comparison, FileResult
 from .spikes import MODES, SHARED_WINDOW_S
 
@@ -428,8 +428,42 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         if both:
             out.append(f"    {both}")
 
-    if not (changes.jumps or changes.trends or changes.unusual):
+    for sw in changes.switching:
+        out += _switching_words(cmp, sw, rows, y, what)
+
+    if not (changes.jumps or changes.trends or changes.unusual or changes.switching):
         out.append(f"  No jumps, trends or unusual files in the {what} ratio.")
+    return out
+
+
+def _switching_words(cmp: Comparison, sw: Switching, rows: list[int], y: np.ndarray,
+                     what: str) -> list[str]:
+    spikes = what == "spike"
+    first, last = rows[sw.first], rows[sw.last]
+    high, low = [rows[i] for i in sw.high], [rows[i] for i in sw.low]
+    if spikes:
+        (ha, hb), (la, lb) = _median_rates(cmp, high), _median_rates(cmp, low)
+        unit, fmt = "spikes per hour", rate
+    else:
+        (ha, hb), (la, lb) = _median_noise(cmp, high), _median_noise(cmp, low)
+        unit, fmt = "counts", lambda x: f"{x:.2f}"
+    out = ["",
+           f"  SWITCHING, files {first + 1} to {last + 1} ({cmp.files[first].start:%Y-%m-%d} to"
+           f" {cmp.files[last].start:%Y-%m-%d}):",
+           f"    The {what} ratio went back and forth {sw.switches} times between about"
+           f" {factor(10 ** sw.level(y, sw.high))} ({len(high)} files) and about"
+           f" {factor(10 ** sw.level(y, sw.low))} ({len(low)} files). That is too often for the"
+           " jump search, which needs each level to last about 15 to 20 files.",
+           f"    {cmp.channel_a}: about {fmt(ha)} {unit} in the high files and {fmt(la)} in the low"
+           f" ones; {cmp.channel_b}: about {fmt(hb)} and {fmt(lb)}."]
+    both = _both_noises_changed(cmp, low, high, spikes)
+    if both:
+        out.append(f"    {both}")
+    out.append("    A fault that comes and goes (a connector or probe), or two kinds of files mixed"
+               " together (bench tests and casts, say), looks like this.")
+    if cmp.mode == "live":
+        out.append("    In live data the water can do it too: real probes follow it, and one may"
+                   " respond more than the other.")
     return out
 
 
@@ -741,6 +775,13 @@ def write_csv(cmp: Comparison, path: Path) -> None:
     unusual_n = {cmp.noise_used[u.index] for u in cmp.noise.unusual}
     trend_s = {cmp.used[i] for t in cmp.spikes.trends for i in range(t.first, t.last + 1)}
     trend_n = {cmp.noise_used[i] for t in cmp.noise.trends for i in range(t.first, t.last + 1)}
+
+    def switch_levels(changes: Changes, rows: list[int]) -> dict[int, str]:
+        return {rows[i]: level for sw in changes.switching
+                for level, where in (("high", sw.high), ("low", sw.low)) for i in where}
+
+    switch_s = switch_levels(cmp.spikes, cmp.used)
+    switch_n = switch_levels(cmp.noise, cmp.noise_used)
     used = set(cmp.used)
 
     def channel_cols(prefix: str, ch) -> dict:
@@ -828,6 +869,10 @@ def write_csv(cmp: Comparison, path: Path) -> None:
             flags.append("unusual spike ratio")
         if i in unusual_n:
             flags.append("unusual noise ratio")
+        if i in switch_s:
+            flags.append(f"{switch_s[i]} in a switching spike ratio")
+        if i in switch_n:
+            flags.append(f"{switch_n[i]} in a switching noise ratio")
         row["findings"] = "; ".join(flags)
         row["notes"] = " | ".join([r.error] if r.error else r.notes)
         rows.append(row)

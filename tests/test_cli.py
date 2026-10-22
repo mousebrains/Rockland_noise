@@ -452,3 +452,23 @@ def test_files_with_no_usable_data_say_so(maker, tmp_path, capsys, cache):
         assert "nan" not in row and "none" not in row and "shorter than" not in row
         assert row.split()[4:11] == ["0.00", "-", "-", "-", "-", "-", "-"]
         assert "no usable data, left out (never deeper than 100 dbar?)" in row
+
+
+def test_a_fault_that_comes_and_goes_is_called_switching(maker, tmp_path, capsys, cache):
+    """T1 busy for 3 files, quiet for 3, and so on: too quick for a jump."""
+    n = maker.fast_samples(SECONDS)
+    busy = list(np.linspace(1000, n - 1000, 40).astype(int))
+    bursts = [busy if k // 3 % 2 else [busy[0]] for k in range(24)]
+    write_bench_bursts(maker, tmp_path / "data", bursts, [[]] * 24)
+    csv_path = tmp_path / "out.csv"
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", tmp_path / "data", "--csv",
+                       csv_path, *cache)
+    assert code == 0 and "JUMP" not in out
+    assert "SWITCHING, files 1 to 24" in out
+    assert "The spike ratio went back and forth 7 times between about 1,201 (12 files) and" \
+        " about 31 (12 files)" in out
+    assert "T1_dT1: about 1,200 spikes per hour in the high files and 30 in the low ones;" \
+        " T2_dT2: about 0 and 0." in out
+    rows = list(csv.DictReader(csv_path.open()))
+    assert rows[0]["findings"] == "low in a switching spike ratio"
+    assert rows[3]["findings"] == "high in a switching spike ratio"

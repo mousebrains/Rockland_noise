@@ -170,6 +170,15 @@ as the same size of change.
          once. A slowly failing probe or a connector slowly corroding can do
          this.
 
+  SWITCHING
+         The ratio went back and forth between two clear levels, a few
+         files at each, too often for the jump search (which needs each
+         level to last about 15 to 20 files). A fault that comes and goes
+         (a connector or probe) or two kinds of files mixed together (bench
+         tests and casts) look like this; so can the water, in live data.
+         The report gives each channel's typical numbers in the high and the
+         low files, which shows which channel changes.
+
   UNUSUAL FILE
          One file that is very different from the files on both sides of it.
          Often something happened during just that file (the instrument was
@@ -212,6 +221,10 @@ Some things a report cannot tell you
     report warns you when that happens.
   * Jumps within the first or last 3 files: there is not enough data on one
     side to be sure. Run again when more files are in.
+  * Changes that come and go every few files. The report calls them
+    SWITCHING when the ratio flips between two clear levels (each at least
+    2x from the middle for spikes); a ratio that just wanders, or flips by
+    less, is not reported. Look at the table and the plot.
 
 What to send your supervisor
 ----------------------------
