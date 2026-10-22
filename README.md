@@ -163,6 +163,7 @@ Run `rockland-noise explain` for the full plain-language guide.
 | `... could not be converted ..., so it was not used to tell a bench test from live data` (CSV notes) | A calibration coefficient in that file's setup is unreadable (for example `0,0687` with a comma). The two channels are still analysed; check the setup, or choose `--mode` yourself. |
 | `too little usable data, left out` | The file has less than a minute of usable data (change with `--min-minutes`). With `--min-pressure`, the instrument may never have gone that deep. |
 | A long run was stopped | Run the same command again. Finished files are remembered and not read again. |
+| The cache folder has grown large | Add `--clear-cache` once: it forgets every remembered result (only the cache's own files are removed). |
 | `rockland-noise: command not found` | Open a new terminal window after installing uv, or run `uv tool update-shell`. |
 
 ## 4. How it works (for the curious and for supervisors)
@@ -241,6 +242,9 @@ the onset of MR435's T2 fault at file A685_0158 (2023-06-12 17:17 UTC, T2 about
 
 Results are remembered per file, channel and setting in a cache folder (shown by
 `rockland-noise compare --help`), so a second run, or one that was interrupted, is fast.
+They are keyed on the file (path, size, time it was changed), every setting, and
+a fingerprint of this program's own code, so after an upgrade, or any change to
+the code, files are analysed afresh. `--clear-cache` forgets everything remembered.
 
 ## 5. For developers
 
