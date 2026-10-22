@@ -313,10 +313,15 @@ file by file in time order:
 * To compare spike rates when one channel has none, 1 spike per hour is added
   to both rates before the ratio is taken for jump and trend detection.
 
-Measured on synthetic series of 30 files: no false jumps or trends in 200
-series of independent noise; 4% false jumps on strongly autocorrelated noise
-(lag-1 correlation 0.7); a 3× step in correlated noise (lag-1 correlation 0.5)
-found 87% of the time. On the AEM1-G per-file counts it finds the MR433
+Measured on synthetic series of 30 files, each file scattered by 0.15 in
+log10 (about ×1.4), as in the tests: no false jumps or trends in 200 series of
+independent noise; 5% false jumps (±0.7%, 1,000 series) when neighbouring files
+are strongly alike (lag-1 correlation 0.7). A step halfway through is found 87%
+of the time when it is 3×, but only 34% of the time when it is 2×, the smallest
+change reported by default (400 series each): `--min-factor` sets what is worth
+reporting, not what is sure to be found. When neighbouring files are alike
+(lag-1 correlation 0.5, the same 0.15 scatter from one file to the next), a 3×
+step is found 68% of the time (84% with a scatter of 0.10). On the AEM1-G per-file counts it finds the MR433
 2025 → 2026 jump (about 270×; T2 had no spikes, so the ratio follows T1's rate),
 the onset of MR435's T2 fault at file A685_0158 (2023-06-12 17:17 UTC, T2 about
 10× busier, T1 unchanged), and a temporary T2 change in MR433's 2023 deployment.
@@ -341,15 +346,21 @@ The P-file reader (`pfile.py`) follows Rockland's Technical Note 051 and the
 ODAS MATLAB library. It was checked sample for sample against
 [microstructure-tpw](https://github.com/mousebrains/turbulence)'s reader on 23
 files (MicroRiders and VMPs, formats 6.0–6.3, 512 and 1024 Hz, 32-bit channels,
-real bad-buffer runs). `tests/test_pfile.py` pins reference values from it for
-four small real files in `tests/data/`, a few records each: a MicroRider at
-format 6.3 and 512 Hz; a MicroRider at format 6.0 and 1024 Hz; a VMP with a
-32-bit channel (JAC_C), unsigned channels (JAC_T, Chlorophyll, Turbidity) and a
-real dropout; and a VMP with test probes on a ship's deck. The reader converts
-to physical units only pressure, thermistor, inclinometer and JAC_T channels;
-everything else stays in counts. It reads only the channels it needs, a few
-megabytes of the file at a time; analysing a 4-hour, 512 Hz file needs about
-230 MB of working data.
+real bad-buffer runs). The one difference is a channel that fills several cells
+of the address matrix, such as Gnd (2 to 6 spare cells per cycle on every
+instrument seen so far): like ODAS's `read_odas.m`, this reader reads every
+cell in the order sampled, at the matching rate, where microstructure-tpw keeps
+the first; Gnd agrees with `read_odas.m` on the four test files.
+`tests/test_pfile.py` pins reference values from microstructure-tpw (and, for
+Gnd, from `read_odas.m`) for four small real files in `tests/data/`, a few
+records each: a MicroRider at format 6.3 and 512 Hz; a MicroRider at format 6.0
+and 1024 Hz; a VMP with a 32-bit channel (JAC_C), unsigned channels (JAC_T,
+Chlorophyll, Turbidity) and a real dropout; and a VMP with test probes on a
+ship's deck. The reader converts to physical units only pressure, thermistor,
+inclinometer and JAC_T channels; everything else stays in counts. It reads only
+the channels it needs, a few megabytes of the file at a time; analysing a
+4-hour, 512 Hz file needs about 450 MB of memory at its peak, of which Python,
+numpy and scipy take about 100 MB.
 The other tests build small P-files from `tests/data/MR_SL435_template.p` with
 synthetic counts written into chosen channels. `tests/test_real_data.py` checks
 agreement with AEM1-G when the AEM1-G tank files are present

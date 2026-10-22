@@ -17,6 +17,10 @@ real files cover the code paths:
 
 Each cut keeps record 0 (the header and setup) and whole data records, so it
 is a valid P-file whose start time is that of the original file.
+
+Gnd is the exception: it fills 2 to 6 spare cells of each matrix cycle, and
+microstructure-tpw keeps only the first. Its values here are from the ODAS
+MATLAB library's read_odas.m, which reads every cell in the order sampled.
 """
 
 from datetime import UTC, datetime
@@ -37,7 +41,7 @@ FIXTURES = {
             "Ax": (6144, 5132, 2036, 8468, 0),
             "Ay": (6144, -31743, 357, -7486, 0),
             "EMC_Cur": (6144, -6577048, -7355, -6949, 0),
-            "Gnd": (768, -847, -1, -2, 0),
+            "Gnd": (4608, -5036, -1, -1, 0),
             "Incl_T": (768, 960000, 1250, 1250, 0),
             "Incl_X": (768, 2679015, 3600, 3600, 0),
             "Incl_Y": (768, 28236, 31, 20, 0),
@@ -61,7 +65,7 @@ FIXTURES = {
             "Chlorophyll": (5120, 7585743, 1466, 1499, 0),
             "DO": (640, 15029786, 23458, 23464, 0),
             "DO_T": (640, -20952849, -32740, -32725, 64),
-            "Gnd": (640, -984, -1, -1, 0),
+            "Gnd": (1280, -1939, -1, -1, 0),
             "Incl_T": (640, 822400, 1285, 1285, 0),
             "Incl_X": (640, -2089851, -3286, -3600, 0),
             "Incl_Y": (640, -16743, -20, -14, 0),
@@ -85,7 +89,7 @@ FIXTURES = {
         datetime(2023, 5, 31, 4, 6, 12, 157000, tzinfo=UTC), 512.03275, 10, {
             "Ax": (5120, 46341, -692, -307, 0),
             "Ay": (5120, 28969, 273, 782, 0),
-            "Gnd": (640, 3081, 5, 4, 0),
+            "Gnd": (2560, 12342, 5, 5, 0),
             "Incl_T": (640, 803840, 1256, 1256, 0),
             "Incl_X": (640, 309101, 487, 469, 0),
             "Incl_Y": (640, -2008046, -3170, -3140, 0),
@@ -111,7 +115,7 @@ REFERENCE = {
     "Ax": (10240, -14470, -2449, -577),
     "Ay": (10240, -25163, 10, -967),
     "EMC_Cur": (10240, -5967109, -3498, -3849),
-    "Gnd": (1280, -1274, -1, -1),
+    "Gnd": (7680, -7587, -1, 0),
     "Incl_T": (1280, 1664000, 1300, 1300),
     "Incl_X": (1280, -574696, -458, -435),
     "Incl_Y": (1280, -1070590, -642, -1055),
@@ -279,3 +283,37 @@ def test_odd_header_values_are_noted(tmp_path):
     slow_clock = tmp_path / "slow_clock.p"
     slow_clock.write_bytes(raw)
     assert any("sample rate" in n for n in PFile(slow_clock).notes)
+
+
+def test_an_id_in_several_cells_is_read_from_every_cell_in_order():
+    """As read_odas.m: Gnd fills 6 spare cells of the template's 8 x 9 matrix."""
+    pf = PFile(TEMPLATE)
+    cells = np.flatnonzero(pf.matrix.ravel() == pf.setup("Gnd").ids[0])
+    assert cells.size == 6
+    assert pf.rate("Gnd") == pf.fs_fast * 6 / 8
+    assert (pf.rate("sh1"), pf.rate("P")) == (pf.fs_fast, pf.fs_slow)
+    dtype = np.dtype([("hdr", ">u2", (64,)), ("data", ">i2", (pf.data_words,))])
+    records = np.fromfile(TEMPLATE, dtype=dtype, offset=pf.first_record)
+    expected = records["data"].reshape(-1, pf.matrix.size)[:, cells].ravel()
+    assert np.array_equal(pf.raw("Gnd"), expected)
+
+
+def test_record_numbers_wrap_after_65535(tmp_path):
+    """The record number is a 16-bit word: 65535 is followed by 0, not a gap."""
+    pf = PFile(TEMPLATE)
+
+    def numbered(name, numbers):
+        raw = bytearray(TEMPLATE.read_bytes())
+        for k, number in enumerate(numbers):
+            at = pf.first_record + k * pf.record_size + 2  # header word 2
+            raw[at:at + 2] = (number % 2**16).to_bytes(2, "big")
+        (tmp_path / name).write_bytes(raw)
+        out = PFile(tmp_path / name)
+        out.load(["sh1"])
+        return out.notes
+
+    n = pf.n_records
+    assert numbered("wrapped.p", [65530 + k for k in range(n)]) == []
+    # Records 0 and 1 are missing, just after the wrap.
+    assert numbered("gap.p", [65530 + k + 2 * (k >= 6) for k in range(n)]) == [
+        "2 record(s) are missing from the file; later times are shifted earlier"]

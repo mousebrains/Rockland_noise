@@ -285,10 +285,11 @@ def run_channels(args: argparse.Namespace) -> int:
     except (PFileReadError, OSError) as ex:
         print(f"Problem: could not read {args.file} as a P-file ({ex})", file=sys.stderr)
         return 1
+    w = max([len("name")] + [len(r["name"]) for r in rows])
     print(f"Channels in {args.file.name}:")
-    print(f"  {'name':<10} {'sensor type':<12} {'samples/s':>9}")
+    print(f"  {'name':<{w}} {'sensor type':<12} {'samples/s':>9}")
     for r in rows:
-        print(f"  {r['name']:<10} {r['type']:<12} {r['fs']:>9.1f}")
+        print(f"  {r['name']:<{w}} {r['type']:<12} {r['fs']:>9.1f}")
     print("\nFor spikes, the fast pre-emphasised thermistor channels (T1_dT1, T2_dT2) and the"
           "\nshear channels (sh1, sh2) are the usual pairs to compare.")
     return 0
