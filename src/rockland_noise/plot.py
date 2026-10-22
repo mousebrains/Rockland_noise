@@ -32,6 +32,7 @@ GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
 CHANNEL_A = "#2a78d6"  # categorical slot 1
 CHANNEL_B = "#eb6834"  # categorical slot 2
+WIDE_NOISE_RANGE = 20.0  # noise from smallest to largest beyond this: a log axis
 
 
 def _style(ax) -> None:
@@ -91,12 +92,19 @@ def _legend(ax) -> None:
 def _findings(ax, changes: Changes, x: np.ndarray, y: np.ndarray, days: np.ndarray) -> None:
     """Draw jumps (vertical rules), trends (fitted lines) and unusual files (rings)."""
     top = ax.get_ylim()[1]
+    # A label is about 80 points wide; one closer than that to the previous
+    # label goes a line lower, so close jumps do not print over each other.
+    width = 80 / 72 * ax.figure.dpi
+    last_x, line = -np.inf, 0
     for j in changes.jumps:
         xj = 0.5 * (x[j.index - 1] + x[j.index])
         ax.axvline(xj, color=INK_2, linewidth=1.2, zorder=1)
         word = "up" if j.factor >= 1 else "down"
         size = j.factor if j.factor >= 1 else 1 / j.factor
-        ax.annotate(f"jump {word} x{factor(size)}", (xj, top), xytext=(3, -2),
+        px = ax.transData.transform((xj, 1))[0]
+        line = line + 1 if px - last_x < width else 0
+        last_x = px
+        ax.annotate(f"jump {word} x{factor(size)}", (xj, top), xytext=(3, -2 - 10 * (line % 3)),
                     textcoords="offset points", va="top", fontsize=8, color=INK)
     for t in changes.trends:
         sl = slice(t.first, t.last + 1)
@@ -168,7 +176,15 @@ def plot(cmp: Comparison, path: Path) -> None:
     _series(ax, x, na, CHANNEL_A, a)
     _series(ax, x, nb, CHANNEL_B, b)
     ax.set_ylabel("noise (counts)", fontsize=8)
-    ax.set_ylim(bottom=0, top=max(np.nanmax(na), np.nanmax(nb)) * 1.25)
+    both = np.r_[na, nb]
+    both = both[np.isfinite(both) & (both > 0)]
+    if both.size and both.max() / both.min() > WIDE_NOISE_RANGE:
+        # A few very noisy files would squash the rest against the axis.
+        ax.set_yscale("log")
+        ax.set_ylim(both.min() / 1.5, both.max() * 2)
+        _plain_log_axis(ax)
+    else:
+        ax.set_ylim(bottom=0, top=max(np.nanmax(na), np.nanmax(nb)) * 1.25)
     _end_labels(ax, x, na, nb, a, b)
     _legend(ax)
 
