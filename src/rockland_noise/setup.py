@@ -9,12 +9,18 @@ Test probes
     calibration's reference resistance, so T1 and T2 read a steady temperature
     equal to the reference temperature T_0 in the instrument's setup (usually
     16.15 deg C, which is why "about 16.3" is the rule of thumb; but 7.88, 9.45
-    or 14.27 on some probes). Measured on bench tests of MicroRiders SN 433,
-    435, 533 and VMPs SN 132, 142, 409, 465: 99% of channels read within 0.03
-    deg C of T_0 (0.2 at most, on a channel full of fault spikes), the middle
-    half of the samples within 0.005 deg C (0.2 with the fault). None of 376
-    channel-files with real probes, from gliders, moorings and profilers,
-    came within 0.5 deg C of T_0 while steady.
+    or 14.27 on some probes). A channel counts as a test probe when it reads
+    within 0.1 deg C of its T_0 with the middle half of its samples within
+    0.05 deg C. Measured on healthy test-probe channels: at most 0.043 deg C
+    from T_0 and 0.017 deg C spread (346 channel-files: bench tests of
+    MicroRiders SN 433, 435, 533 and VMPs SN 132, 142, 409, 465, used to choose
+    the limits), and at most 0.030 and 0.010 deg C on 220 channel-files from
+    deployments and bench tests that were not (TN441 and g3 gliders, Palau
+    2024 VMPs, REMUS, MicroRider SN 247, ...). Real probes pass T_0 only on the
+    way to somewhere else: of 1,844 real-probe channel-files, the 48 whose
+    median came within 0.5 deg C of T_0 spread over 0.75 deg C or more. A
+    faulty channel such as MR433's T1 (up to 0.2 deg C off and 0.2 deg C
+    unsteady) fails the test and is flagged, see below.
 
 At the surface
     The pressure stays near zero and steady: 95% of the readings at most 1.2
@@ -50,8 +56,8 @@ from dataclasses import dataclass
 
 from .reader import Evidence
 
-TEST_PROBE_TOLERANCE = 0.5  # deg C from T_0
-TEST_PROBE_MAX_SPREAD = 0.25  # deg C, middle half of the samples
+TEST_PROBE_TOLERANCE = 0.1  # deg C from T_0
+TEST_PROBE_MAX_SPREAD = 0.05  # deg C, middle half of the samples
 # Readings this far out mean no probe is connected (the electronics hit a limit).
 NO_PROBE_LOW, NO_PROBE_HIGH = -10.0, 50.0
 NO_PROBE_MAX_SPREAD = 0.01
@@ -87,26 +93,33 @@ def _thermistor(t: float, ref: float, spread: float) -> str | None:
     return "real"
 
 
-def _odd_channel(name: str, follows: float, water_spread: float) -> str:
-    """Why a temperature channel next to a test probe is not steady at its T_0."""
+def _odd_channel(name: str, spread: float, follows: float, water_spread: float) -> str:
+    """Why a temperature channel next to a test probe does not read steadily at its T_0.
+
+    The words do not include numbers, so the report can count the files with
+    the same problem; the CSV has each file's temperatures and spreads.
+    """
     if not math.isnan(follows) and water_spread >= WATER_VARIES:
         if follows >= FOLLOWS:
             return (f"{name} is not a test probe and follows the water temperature (JAC_T):"
                     " a real probe?")
         return (f"{name} is unsteady and does not follow the water temperature (JAC_T):"
                 " bad temperature electronics?")
-    return f"{name} is unsteady, unlike a test probe: bad temperature electronics?"
+    if spread > TEST_PROBE_MAX_SPREAD:
+        return f"{name} is unsteady, unlike a test probe: bad temperature electronics?"
+    return (f"{name} is steady but not at its reference temperature T_0, unlike a test probe:"
+            " bad temperature electronics?")
 
 
 def classify(ev: Evidence) -> Setup:
-    channels = [("T1", _thermistor(ev.t1, ev.t1_ref, ev.t1_spread), ev.t1_follows),
-                ("T2", _thermistor(ev.t2, ev.t2_ref, ev.t2_spread), ev.t2_follows)]
+    channels = [("T1", _thermistor(ev.t1, ev.t1_ref, ev.t1_spread), (ev.t1_spread, ev.t1_follows)),
+                ("T2", _thermistor(ev.t2, ev.t2_ref, ev.t2_spread), (ev.t2_spread, ev.t2_follows))]
     kinds = [k for _, k, _ in channels if k is not None]
     warnings = []
     if "test" in kinds:
         probes = "test"
-        warnings = [_odd_channel(name, follows, ev.water_spread)
-                    for name, k, follows in channels if k == "real"]
+        warnings = [_odd_channel(name, *numbers, ev.water_spread)
+                    for name, k, numbers in channels if k == "real"]
     elif "real" in kinds:
         probes = "real"
     else:
