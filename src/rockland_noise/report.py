@@ -12,13 +12,15 @@ from pathlib import Path
 import numpy as np
 
 from . import checklist
-from .changes import Changes, Jump
+from .changes import Changes, Jump, neighbours
 from .compare import Comparison, FileResult
-from .spikes import MODES
+from .spikes import MODES, SHARED_WINDOW_S
 
 TIME = "%Y-%m-%d %H:%M"
 BENCH_BUSY_PER_HOUR = 10.0  # a typical rate above this on the bench gets a warning
 COARSE_NOISE = 0.5  # counts: below this a channel is mostly whole-count steps
+BOTH_CHANGED = 2.0  # both channels' noise changing this much means the signal changed
+ONE_CHANNEL_FACTOR = 3.0  # a channel's own spikes must outnumber its partner's this much
 
 
 # --- formatting helpers ----------------------------------------------------------
@@ -58,11 +60,17 @@ def duration(days: float) -> str:
     return f"{days / 365.25:.1f} years"
 
 
-def how_sure(p: float) -> str:
-    tries = 1 / p
+def how_sure(p: float, shuffles: int | None = None) -> str:
+    """The chance that a finding is luck, in words. ``shuffles``: for a jump."""
     words = "very sure" if p <= 0.001 else "fairly sure"
-    return (f"{words}: a change this big turned up by chance in about 1 in "
-            f"{tries:,.0f} shuffles of these files")
+    if shuffles is not None:
+        if p * (shuffles + 1) <= 1.0001:  # no shuffle reached it: the smallest possible
+            return f"{words}: none of {shuffles:,} shuffles of these files gave a change this big"
+        return (f"{words}: a change this big turned up by chance in about 1 in {1 / p:,.0f}"
+                " shuffles of these files")
+    if p < 1e-4:
+        return f"{words}: the chance of a steady change this big by luck is below 1 in 10,000"
+    return f"{words}: the chance of a steady change this big by luck is about 1 in {1 / p:,.0f}"
 
 
 def times_word(f: float) -> str:
@@ -84,6 +92,13 @@ def spike_ratio_text(r: FileResult) -> str:
     if a.spikes == 0:
         return "B only"
     return factor(a.rate_per_hour / b.rate_per_hour)
+
+
+def both_per_hour(r: FileResult) -> float:
+    """Spikes per hour that happened on both channels at once (within 0.1 s)."""
+    if r.a is None or r.b is None or r.usable_s <= 0:
+        return float("nan")
+    return min(r.a.shared, r.b.shared) / (r.usable_s / 3600)
 
 
 def _setup_label(r: FileResult) -> str:
@@ -141,9 +156,9 @@ def table(cmp: Comparison) -> list[str]:
     name_w = max([len("P-file")] + [len(f.path.name) for f in cmp.files])
     group = 2 * w + 12  # two channel columns and a ratio column, with spaces
     head1 = (f"{'':>4}  {'':<{name_w}}  {'':<16}  {'':>6}  "
-             f"{'spikes per hour':-^{group}}  {'noise (counts)':-^{group}}")
+             f"{'spikes per hour':-^{group + 8}}  {'noise (counts)':-^{group}}")
     head2 = (f"{'#':>4}  {'P-file':<{name_w}}  {'Start (UTC)':<16}  {'Hours':>6}  "
-             f"{a:>{w}}  {b:>{w}}  {'A/B':>8}  {a:>{w}}  {b:>{w}}  {'A/B':>8}  Notes")
+             f"{a:>{w}}  {b:>{w}}  {'both':>6}  {'A/B':>8}  {a:>{w}}  {b:>{w}}  {'A/B':>8}  Notes")
     lines = [head1, head2, "-" * len(head2)]
 
     spike_jumps = _jump_rows(cmp.spikes, cmp.used)
@@ -174,7 +189,8 @@ def table(cmp: Comparison) -> list[str]:
         lines.append((
             f"{i + 1:>4}  {r.path.name:<{name_w}}  {r.start.strftime(TIME):<16}  "
             f"{r.usable_s / 3600:>6.2f}  {rate(r.a.rate_per_hour):>{w}}  "
-            f"{rate(r.b.rate_per_hour):>{w}}  {spike_ratio_text(r):>8}  "
+            f"{rate(r.b.rate_per_hour):>{w}}  {rate(both_per_hour(r)):>6}  "
+            f"{spike_ratio_text(r):>8}  "
             f"{r.a.noise:>{w}.2f}  {r.b.noise:>{w}.2f}  {noise_ratio:>8}  {'; '.join(notes)}"
         ).rstrip())
         previous = r.start
@@ -225,6 +241,29 @@ def _pairs_of_jumps(changes: Changes, min_factor: float) -> set[int]:
     return out
 
 
+def _both_noises_changed(cmp: Comparison, before: list[int], after: list[int],
+                         spikes: bool) -> str:
+    """If both channels' noise changed together, say so: the signal changed, not a channel."""
+    (a0, b0), (a1, b1) = _median_noise(cmp, before), _median_noise(cmp, after)
+    if not (a0 > 0 and b0 > 0 and a1 > 0 and b1 > 0):
+        return ""
+    fa, fb = a1 / a0, b1 / b0
+    up = fa >= BOTH_CHANGED and fb >= BOTH_CHANGED
+    down = fa <= 1 / BOTH_CHANGED and fb <= 1 / BOTH_CHANGED
+    if not (up or down):
+        return ""
+    sizes = f"{factor(fa)}x and {factor(fb)}x" if up else f"{factor(1 / fa)}x and {factor(1 / fb)}x"
+    text = f"Both channels' noise {'rose' if up else 'fell'} together ({sizes}): "
+    if spikes:
+        return text + ("the spike threshold follows the noise, so these spike counts cannot be"
+                       " compared with the other files'.")
+    if cmp.mode == "live":
+        return text + ("the water or the vehicle changed (turbulence, speed, vibration), not one"
+                       " channel. A noise-ratio change like this is not by itself a fault.")
+    return text + ("something reached both (handling, vibration, electrical interference),"
+                   " not one channel's electronics.")
+
+
 def _channel_words(cmp: Comparison, before: list[int], after: list[int], spikes: bool) -> str:
     a, b = cmp.channel_a, cmp.channel_b
     if spikes:
@@ -268,10 +307,23 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         for name, ch in ((a, "a"), (b, "b")):
             if all(getattr(cmp.files[i], ch).spikes == 0 for i in rows):
                 out.append(f"  {name} had no spikes at all in any of the {len(rows)} files.")
+        out += shared_words(cmp, rows)
+        if cmp.mode == "live" and (ra > 0 or rb > 0):
+            out.append("  In live data most spikes on real probes are real signal (turbulence,"
+                       " plankton, vibration), so the counts say more about the water than about"
+                       " the electronics. Spikes on one channel only are the ones that point at a"
+                       " channel.")
     else:
         na, nb = _median_noise(cmp, rows)
         out.append(f"  In a typical file the noise was {na:.2f} counts on {a} and {nb:.2f} on"
                    f" {b}: a noise ratio of {typical:.2f}.")
+        if cmp.mode == "live":
+            out.append("  In live data a real probe's 'noise' includes real signal, so it rises"
+                       " and falls with the water. When that signal is far above the electronic"
+                       " noise, the noise ratio shows how differently the two probes respond to"
+                       " it (their sensitivity, where they sit, how vibration reaches them), so"
+                       " it can change with no fault at all. It says most about the electronics"
+                       " when both channels are quiet.")
 
     if changes.too_few:
         out.append(f"  Too few files ({len(rows)}) to look for jumps or trends; "
@@ -287,6 +339,7 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
                    + "; ".join(spans) + ".")
 
     w = cmp.options.spike_changes.long_window
+    shuffles = cmp.options.spike_changes.n_shuffles
     temporary = _pairs_of_jumps(changes, min_factor)
     skip_next = False
     for n, j in enumerate(changes.jumps):
@@ -307,7 +360,11 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
             out.append(f"    The {what} ratio was {times_word(j.factor)} than in the files "
                        "before and after, then went back.")
             out.append(f"    {_channel_words(cmp, before_rows, after_rows, spikes)}")
-            out.append(f"    How sure: {how_sure(max(j.p_value, back.p_value))}.")
+            inside = [rows[i] for i in range(j.index, back.index)]
+            both = _both_noises_changed(cmp, before_rows, inside, spikes)
+            if both:
+                out.append(f"    {both}")
+            out.append(f"    How sure: {how_sure(max(j.p_value, back.p_value), shuffles)}.")
             skip_next = True
             continue
         out.append("")
@@ -315,10 +372,13 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         out.append(f"    The {what} ratio went from about {factor(10 ** j.before)} to about "
                    f"{factor(10 ** j.after)}: {times_word(j.factor)}, and stayed there.")
         out.append(f"    {_channel_words(cmp, before_rows, after_rows, spikes)}")
+        both = _both_noises_changed(cmp, before_rows, after_rows, spikes)
+        if both:
+            out.append(f"    {both}")
         gap = (cmp.files[here].start - cmp.files[prev].start).total_seconds() / 86400
         if any(g[0] == j.index for g in changes.groups):
             out.append(f"    It happened across a gap of {duration(gap)} with no files.")
-        out.append(f"    How sure: {how_sure(j.p_value)}.")
+        out.append(f"    How sure: {how_sure(j.p_value, shuffles)}.")
 
     for t in changes.trends:
         first, last = rows[t.first], rows[t.last]
@@ -328,9 +388,12 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         out.append(f"    The {what} ratio {direction} steadily from about {factor(10 ** t.start)}"
                    f" to about {factor(10 ** t.end)} ({times_word(t.factor)} by the end).")
         k = min(5, (t.last - t.first + 1) // 2)
-        out.append("    " + _channel_words(cmp, [rows[i] for i in range(t.first, t.first + k)],
-                                           [rows[i] for i in range(t.last - k + 1, t.last + 1)],
-                                           spikes))
+        first_rows = [rows[i] for i in range(t.first, t.first + k)]
+        last_rows = [rows[i] for i in range(t.last - k + 1, t.last + 1)]
+        out.append("    " + _channel_words(cmp, first_rows, last_rows, spikes))
+        both = _both_noises_changed(cmp, first_rows, last_rows, spikes)
+        if both:
+            out.append(f"    {both}")
         out.append(f"    How sure: {how_sure(t.p_value)}.")
 
     for u in changes.unusual:
@@ -341,6 +404,10 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         out.append("")
         out.append(f"  UNUSUAL: {_describe_file(cmp, i)} has a {what} ratio "
                    f"{times_word(u.factor)} than {where}.")
+        both = _both_noises_changed(cmp, [rows[k] for k in neighbours(u.index, len(rows))], [i],
+                                    spikes)
+        if both:
+            out.append(f"    {both}")
 
     if not (changes.jumps or changes.trends or changes.unusual):
         out.append(f"  No jumps, trends or unusual files in the {what} ratio.")
@@ -399,23 +466,66 @@ def temperature_warnings(cmp: Comparison) -> list[str]:
     return ["", "Temperature channels", *out] if out else []
 
 
+def shared_words(cmp: Comparison, rows: list[int]) -> list[str]:
+    """How many spikes the two channels had at the same moment, and what that means."""
+    out = []
+    parts = []
+    hours = sum(cmp.files[i].usable_s for i in rows) / 3600
+    for name, other, slot, other_slot in ((cmp.channel_a, cmp.channel_b, "a", "b"),
+                                          (cmp.channel_b, cmp.channel_a, "b", "a")):
+        total = sum(getattr(cmp.files[i], slot).spikes for i in rows)
+        if total == 0:
+            continue
+        shared = sum(getattr(cmp.files[i], slot).shared for i in rows)
+        # Chance: the other channel's spikes cover 2 x 0.1 s each.
+        others = sum(getattr(cmp.files[i], other_slot).spikes for i in rows)
+        chance = min(1.0, 2 * SHARED_WINDOW_S * others / (hours * 3600)) if hours > 0 else 0.0
+        share = 100 * shared / total
+        share_text = "under 1%" if 0 < share < 1 else f"{share:.0f}%"
+        text = f"{share_text} of {name}'s spikes came within 0.1 s of one on {other}"
+        if chance >= 0.05:
+            text += f" (about {100 * chance:.0f}% would by chance at these rates)"
+        parts.append(text)
+    if parts:
+        out.append("  " + "; ".join(parts) + ".")
+        out.append("  Spikes on both channels at once come from something that reaches both"
+                   " (a bump, shaking, real signal); spikes on one channel only point at that"
+                   " channel.")
+    return out
+
+
 def bench_hints(cmp: Comparison) -> list[str]:
     """Extra plain-language warnings that only make sense for a bench test."""
     rows = cmp.used
     if cmp.mode != "bench" or not rows:
         return []
     out = []
-    ra, rb = _median_rates(cmp, rows)
-    for name, r in ((cmp.channel_a, ra), (cmp.channel_b, rb)):
-        # Healthy thermistor channels in 163 bench tests averaged 0.5 spikes per
-        # hour, shear 3.6 (up to about 90 on both shear channels at once in a
-        # shaky setting); a faulty T1 showed 600 to 3000.
-        if r >= BENCH_BUSY_PER_HOUR:
-            out.append(f"  {name} had about {rate(r)} spikes per hour in a typical file. With test"
-                       " probes on a quiet bench a healthy channel has few or none. If the"
-                       " other channel has about as many, the instrument was probably bumped"
-                       " or shaken. If only this channel has them, the channel, its"
-                       " connector or the test probe may need attention.")
+    # Healthy thermistor channels in 163 bench tests averaged 0.5 spikes per
+    # hour, shear 3.6, mostly shared between the two channels (up to about 90
+    # per hour on both shear channels at once in a shaky setting); a faulty T1
+    # showed 600 to 3000, on that channel alone.
+    only = {name: float(np.median([getattr(cmp.files[i], slot).only_per_hour for i in rows]))
+            for name, slot in ((cmp.channel_a, "a"), (cmp.channel_b, "b"))}
+    both = float(np.median([both_per_hour(cmp.files[i]) for i in rows]))
+    # Shaking also gives spikes on one channel only (a bump need not cross the
+    # threshold on both): on the OOI SN 433 bench tests 19 and 44 per hour of
+    # each shear channel's own, besides 48 per hour shared. So a channel is
+    # singled out only when its own spikes far outnumber its partner's.
+    (a, ra), (b, rb) = only.items()
+    for name, r, other in ((a, ra, rb), (b, rb, ra)):
+        if r >= BENCH_BUSY_PER_HOUR and r >= ONE_CHANNEL_FACTOR * (other + 1):
+            out.append(f"  {name} had about {rate(r)} spikes per hour that the other channel did"
+                       " not have, in a typical file. With test probes on a quiet bench a healthy"
+                       " channel has few or none, so the channel, its connector or the test probe"
+                       " may need attention.")
+    if min(ra, rb) >= BENCH_BUSY_PER_HOUR and max(ra, rb) < ONE_CHANNEL_FACTOR * (min(ra, rb) + 1):
+        out.append(f"  Both channels had many spikes of their own ({a} about {rate(ra)}, {b} about"
+                   f" {rate(rb)} per hour in a typical file). That points at the surroundings"
+                   " rather than one channel; repeat the test somewhere quieter to be sure.")
+    if both >= BENCH_BUSY_PER_HOUR:
+        out.append(f"  Both channels spiked at the same moment about {rate(both)} times per hour"
+                   " in a typical file: the instrument was probably bumped or shaken (people"
+                   " nearby, a ship, machinery). That does not point at either channel.")
     same_kind = all(cmp.files[i].a.kind and cmp.files[i].a.kind == cmp.files[i].b.kind
                     for i in rows)
     if same_kind and cmp.noise_used:
@@ -436,7 +546,9 @@ def checklist_section(cmp: Comparison) -> list[str]:
     if not rows:
         return []
     out = ["", "Rockland Bench Test Review Checklist (V3): items about these two channels",
-           "  ('typically' = 99.9% of the samples, the same as rsi-tpw bench)"]
+           "  ('typically' = 99.9% of the samples, the same as rsi-tpw bench; the checklist is"
+           " for a 1-minute file, so longer files are judged a minute at a time and the"
+           " typical minute is compared with the limit)"]
     seen = set()
     for slot, name in (("a", cmp.channel_a), ("b", cmp.channel_b)):
         limit = checklist.limit_for(name)
@@ -450,10 +562,20 @@ def checklist_section(cmp: Comparison) -> list[str]:
         ranges = [ch.typical_range for _, ch in results]
         means = [ch.mean for _, ch in results]
         bad = [i + 1 for i, ch in results if checklist.problems(ch, limit)]
-        text = (f"    {name}: within +-{min(ranges):,.0f} to +-{max(ranges):,.0f} counts")
+        text = (f"    {name}: in a typical minute within +-{min(ranges):,.0f} to"
+                f" +-{max(ranges):,.0f} counts")
         if limit.offset is not None:
             text += f", offset {min(means):,.0f} to {max(means):,.0f} counts"
         out.append(text + ".")
+        minutes = [x for _, ch in results for x in ch.minute_ranges]
+        over = sum(x > limit.typical for x in minutes)
+        if over:
+            worst_i, worst = max(results, key=lambda r: r[1].worst_range)
+            share = 100 * over / len(minutes)
+            share_text = "under 1%" if share < 1 else f"{share:.0f}%"
+            out.append(f"      {over:,} of {len(minutes):,} minutes ({share_text}) were over"
+                       f" +-{limit.typical:g}; the worst was +-{worst.worst_range:,.0f} counts"
+                       f" (file #{worst_i + 1}).")
         if bad:
             shown = ", ".join(str(b) for b in bad[:20]) + (" ..." if len(bad) > 20 else "")
             out.append(f"      OUTSIDE the checklist in {len(bad)} of {len(results)} files"
@@ -544,6 +666,9 @@ def write_csv(cmp: Comparison, path: Path) -> None:
         return {
             f"{prefix}_spikes": ch.spikes,
             f"{prefix}_spikes_per_hour": round(ch.rate_per_hour, 3),
+            f"{prefix}_spikes_shared": ch.shared,
+            f"{prefix}_spikes_only_per_hour": (round(ch.only_per_hour, 3)
+                                               if math.isfinite(ch.only_per_hour) else ""),
             f"{prefix}_noise_counts": round(ch.noise, 4),
             f"{prefix}_threshold_counts": round(ch.threshold, 3),
             f"{prefix}_spikes_starting_upward_pct": (
@@ -556,11 +681,14 @@ def write_csv(cmp: Comparison, path: Path) -> None:
             f"{prefix}_offset_counts": round(ch.mean, 2) if math.isfinite(ch.mean) else "",
             f"{prefix}_typical_range_counts": (
                 round(ch.typical_range, 2) if math.isfinite(ch.typical_range) else ""),
+            f"{prefix}_worst_minute_range_counts": (
+                round(ch.worst_range, 2) if math.isfinite(ch.worst_range) else ""),
             f"{prefix}_bench_checklist": _checklist_word(ch),
         }
 
     rows = []
     for i, r in enumerate(cmp.files):
+        both = both_per_hour(r)
         row = {
             "row": i + 1,
             "file": r.path.name,
@@ -575,6 +703,7 @@ def write_csv(cmp: Comparison, path: Path) -> None:
         }
         row |= channel_cols("A", r.a)
         row |= channel_cols("B", r.b)
+        row["spikes_on_both_per_hour"] = round(both, 3) if math.isfinite(both) else ""
         ev, st = r.evidence, r.setup
         if ev is not None:
             row |= {

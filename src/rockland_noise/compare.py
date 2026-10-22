@@ -21,11 +21,18 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import poisson
 
 from .changes import Changes, ChangeSettings, find_changes
 from .reader import ChannelNotFoundError, Evidence, NoPressureError, PFileReadError, read_channels
 from .setup import Setup, classify, run_mode
-from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
+from .spikes import (
+    SHARED_WINDOW_S,
+    ChannelResult,
+    SpikeSettings,
+    analyze_channel_times,
+    shared_spikes,
+)
 
 # For the jump and trend search, one spike per hour is added to both channels'
 # rates, so the ratio stays finite when a channel has none (both having none
@@ -280,9 +287,12 @@ class Cache:
 # --- one file ------------------------------------------------------------------
 
 
-def _channel_settings(spike: SpikeSettings, options: Options) -> dict:
+def _channel_settings(spike: SpikeSettings, partner: str, partner_spike: SpikeSettings,
+                      options: Options) -> dict:
+    # The partner matters too: how many spikes the two channels share.
     return {**asdict(spike), "skip_start_s": options.skip_start_s,
-            "min_pressure_dbar": options.min_pressure_dbar}
+            "min_pressure_dbar": options.min_pressure_dbar,
+            "partner": partner.casefold(), "partner_settings": asdict(partner_spike)}
 
 
 def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
@@ -290,10 +300,12 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
     """Spike and noise numbers for both channels of one file. Never raises for a bad file."""
     result = FileResult(path=path)
     modes = list(options.spike)
+    names = (channel_a, channel_b)
     try:
-        keys = {(mode, slot): Cache.key(path, name, _channel_settings(
-                    options.spike[mode][slot], options))
-                for mode in modes for slot, name in enumerate((channel_a, channel_b))}
+        keys = {(mode, slot): Cache.key(path, names[slot], _channel_settings(
+                    options.spike[mode][slot], names[1 - slot], options.spike[mode][1 - slot],
+                    options))
+                for mode in modes for slot in (0, 1)}
     except OSError as ex:
         result.error = f"Cannot open the file: {ex.strerror or ex}"
         return result
@@ -341,16 +353,21 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
             "file_number": data.file_number, "notes": data.notes,
             "evidence": asdict(data.evidence)}
     per_slot = []
-    for slot, requested in enumerate((channel_a, channel_b)):
+    for slot, requested in enumerate(names):
         ch = data.channels[data.resolved[requested]]
-        results = analyze_channel_many(ch.name, ch.counts, ch.fs, ch.usable,
-                                       [options.spike[m][slot] for m in modes], bad=ch.bad,
-                                       limits=ch.limits)
-        for mode, res in zip(modes, results, strict=True):
+        results = analyze_channel_times(ch.name, ch.counts, ch.fs, ch.usable,
+                                        [options.spike[m][slot] for m in modes], bad=ch.bad,
+                                        limits=ch.limits)
+        for res, _ in results:
             res.kind, res.bits, res.fast = ch.kind, ch.bits, ch.fast
-            cache.put(keys[(mode, slot)], {"file": meta, "channel": asdict(res)})
         per_slot.append(results)
-    result.by_mode = {m: (per_slot[0][i], per_slot[1][i]) for i, m in enumerate(modes)}
+    for i, mode in enumerate(modes):
+        (res_a, times_a), (res_b, times_b) = per_slot[0][i], per_slot[1][i]
+        res_a.shared = shared_spikes(times_a, times_b, SHARED_WINDOW_S)
+        res_b.shared = shared_spikes(times_b, times_a, SHARED_WINDOW_S)
+        for slot, res in enumerate((res_a, res_b)):
+            cache.put(keys[(mode, slot)], {"file": meta, "channel": asdict(res)})
+    result.by_mode = {m: (per_slot[0][i][0], per_slot[1][i][0]) for i, m in enumerate(modes)}
     return result
 
 
@@ -360,6 +377,33 @@ def analyze_file(path: Path, channel_a: str, channel_b: str, options: Options,
 def _days(files: list[FileResult], idx: list[int]) -> np.ndarray:
     t0 = files[idx[0]].start if idx else None
     return np.array([(files[i].start - t0).total_seconds() / 86400 for i in idx])
+
+
+def counting_check(files: list[FileResult], rows: list[int], alpha: float):
+    """For the spike ratio: is a file's difference from its neighbours beyond counting chance?
+
+    Spikes are counted, so a short file with a handful of them can have a
+    wild ratio by luck. A file is only called unusual if one of its two
+    counts is unlikely (below ``alpha``, by the Poisson distribution) at the
+    neighbouring files' typical rate for that channel, in the direction of the
+    change: A higher or B lower for a higher ratio, and the other way round.
+    The rates include the same extra spike per hour as the ratio, so a quiet
+    neighbourhood does not make one spike look impossible.
+    """
+    n = {s: np.array([getattr(files[i], s).spikes for i in rows], dtype=float) for s in "ab"}
+    h = {s: np.array([getattr(files[i], s).usable_s / 3600 for i in rows]) for s in "ab"}
+
+    def check(i: int, around: np.ndarray, higher: bool) -> bool:
+        lam = {s: (float(np.median(n[s][around] / h[s][around])) + EXTRA_SPIKES_PER_HOUR)
+               * h[s][i] for s in "ab"}
+        more_a = poisson.sf(n["a"][i] - 1, lam["a"])  # chance of at least this many on A
+        fewer_a = poisson.cdf(n["a"][i], lam["a"])  # ...of at most this many
+        more_b = poisson.sf(n["b"][i] - 1, lam["b"])
+        fewer_b = poisson.cdf(n["b"][i], lam["b"])
+        p = min(more_a, fewer_b) if higher else min(fewer_a, more_b)
+        return bool(p < alpha)
+
+    return check
 
 
 def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
@@ -395,7 +439,8 @@ def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
     noise_used = [i for i in used if math.isfinite(files[i].noise_ratio_log)]
     spikes = find_changes(_days(files, used),
                           np.array([files[i].spike_ratio_log for i in used]),
-                          options.spike_changes)
+                          options.spike_changes,
+                          counting_check(files, used, options.spike_changes.unusual_alpha))
     noise = find_changes(_days(files, noise_used),
                          np.array([files[i].noise_ratio_log for i in noise_used]),
                          options.noise_changes)
