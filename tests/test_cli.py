@@ -416,3 +416,25 @@ def test_a_railed_channel_is_not_the_clean_one(maker, tmp_path, capsys, cache):
     assert "left out: A railed (5% of its samples at the end of its range)" in out
     assert "hit its limit" not in out
     assert "JUMP" not in out and "UNUSUAL" not in out
+
+
+def test_a_gap_full_of_left_out_files_is_not_called_empty(maker, tmp_path, capsys, cache):
+    """Files 5-8 have no T2 probe and lie 3 days apart: the compared files have a gap
+    there, but the instrument did record."""
+    folder = tmp_path / "bench"
+    folder.mkdir()
+    n = maker.fast_samples(SECONDS)
+    start = T0
+    for k in range(12):
+        channels = bench_channels(maker, SECONDS, seed=k)
+        channels |= {"T1_dT1": noise(n, 3.0, -20, seed=k),
+                     "T2_dT2": noise(n, 3.0, -20, seed=50 + k)}
+        if 4 <= k < 8:
+            channels["T2"] = np.full(SECONDS * 64, counts_for_temperature(maker, "T2", -16.05))
+            channels["T2_dT2"] = -32347 + np.random.default_rng(k).integers(0, 4, n)
+        maker.write(folder / f"B_{k + 1:04d}.p", start=start, seconds=SECONDS, channels=channels)
+        start += timedelta(days=3) if 3 <= k < 8 else timedelta(hours=1)
+    code, out, _ = run(capsys, "compare", "T1_dT1", "T2_dT2", folder, *cache)
+    assert code == 0
+    assert "The files compared fall in 2 separate stretches of time" in out
+    assert "The files fall in" not in out

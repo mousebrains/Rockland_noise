@@ -220,6 +220,12 @@ def _median_noise(cmp: Comparison, rows: list[int]) -> tuple[float, float]:
             float(np.median([cmp.files[i].b.noise for i in rows])))
 
 
+def _left_out_between(i: int, j: int) -> str:
+    """' compared (5 left out)' when files lie between rows i and j but were not compared."""
+    k = j - i - 1
+    return f" compared ({k} left out)" if k > 0 else ""
+
+
 def _describe_file(cmp: Comparison, i: int) -> str:
     r = cmp.files[i]
     return f"file {i + 1} ({r.path.name}, {r.start.strftime(TIME)} UTC)"
@@ -341,8 +347,9 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
         for g0, g1 in changes.groups:
             first, last = cmp.files[rows[g0]].start, cmp.files[rows[g1 - 1]].start
             spans.append(f"{first:%Y-%m-%d} to {last:%Y-%m-%d} ({g1 - g0} files)")
-        out.append(f"  The files fall in {len(changes.groups)} separate stretches of time: "
-                   + "; ".join(spans) + ".")
+        compared = " compared" if len(rows) < sum(not f.error for f in cmp.files) else ""
+        out.append(f"  The files{compared} fall in {len(changes.groups)} separate stretches of"
+                   " time: " + "; ".join(spans) + ".")
 
     w = cmp.options.spike_changes.long_window
     shuffles = cmp.options.spike_changes.n_shuffles
@@ -383,7 +390,8 @@ def findings(cmp: Comparison, changes: Changes, rows: list[int], what: str,
             out.append(f"    {both}")
         gap = (cmp.files[here].start - cmp.files[prev].start).total_seconds() / 86400
         if any(g[0] == j.index for g in changes.groups):
-            out.append(f"    It happened across a gap of {duration(gap)} with no files.")
+            out.append(f"    It happened across a gap of {duration(gap)} with no files"
+                       f"{_left_out_between(prev, here)}.")
         out.append(f"    How sure: {how_sure(j.p_value, shuffles)}.")
 
     for t in changes.trends:
