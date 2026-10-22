@@ -12,15 +12,20 @@ The samples are multiplexed. The ``[matrix]`` section is a grid of channel ids,
 ``n_rows`` rows by ``n_cols`` columns; the instrument samples it row by row,
 one row per "scan". A channel whose id fills a whole column is sampled every
 scan (a fast channel, about 512 Hz); a channel whose id appears once is
-sampled once per matrix cycle (a slow channel, about 64 Hz). Every record
-holds whole matrix cycles.
+sampled once per matrix cycle (a slow channel, about 64 Hz). An id may also
+appear in a few cells (Gnd fills spare cells, 2 to 6 per cycle on the
+instruments seen so far); as in read_odas.m, every cell is read, in the order
+sampled, and the rate is the fast rate times the cells per cycle over
+``n_rows``. Every record holds whole matrix cycles.
 
 This module follows the ODAS MATLAB library (read_odas.m, convert_odas.m) the
 way microstructure-tpw's ``odas_tpw.rsi.p_file`` does, and was checked against
-it sample for sample (see tests/test_pfile.py). It reads raw counts for any
-channel, and converts to physical units only the few channel types this
-program needs: pressure ("poly"), thermistors ("therm"), the inclinometer
-("inclxy", "inclt") and the VMP's CT-sensor temperature ("jac_t").
+it sample for sample (see tests/test_pfile.py); the one difference is an id in
+a few cells, where microstructure-tpw keeps only the first. It reads raw
+counts for any channel, and converts to physical units only the few channel
+types this program needs: pressure ("poly"), thermistors ("therm"), the
+inclinometer ("inclxy", "inclt") and the VMP's CT-sensor temperature
+("jac_t").
 
 Not supported: the legacy pre-2015 header-version-1 files, which keep their
 configuration in a separate setup file.
@@ -300,7 +305,9 @@ class PFile:
         return bool(np.all(self.matrix[:, col] == ids[0]))
 
     def rate(self, name: str) -> float:
-        return self.fs_fast if self.is_fast(name) else self.fs_slow
+        """Samples per second: the fast rate times the cells per cycle over n_rows (read_odas.m)."""
+        cells = int(np.count_nonzero(self.matrix == self._setups[name].ids[0]))
+        return self.fs_fast if cells == self.n_rows else self.fs_fast * cells / self.n_rows
 
     @property
     def duration_s(self) -> float:
@@ -326,16 +333,18 @@ class PFile:
         if not wanted and self._checked:
             return
         cycle = self.n_rows * self.n_cols
-        where = {}  # address -> (first word in a record, step between its samples)
+        # Address -> its cells within one matrix cycle, row by row (the order
+        # they are sampled): a slice when they are evenly spaced (a whole
+        # column, or one cell), else the list of cells (e.g. Gnd in spare cells).
+        where: dict[int, slice | np.ndarray] = {}
         for ch_id in wanted:
-            rows, cols = np.nonzero(self.matrix == ch_id)
-            col = int(cols[0])
-            if np.all(self.matrix[:, col] == ch_id):  # fast: the whole column
-                where[ch_id] = (col, self.n_cols)
-            else:  # slow: first cell, once per matrix cycle
-                where[ch_id] = (int(rows[0]) * self.n_cols + col, cycle)
-        out = {i: np.empty(self.n_records * (self.data_words // step), dtype=np.int16)
-               for i, (_, step) in where.items()}
+            cells = np.flatnonzero(self.matrix.ravel() == ch_id)
+            steps = np.diff(np.append(cells, cells[0] + cycle))
+            where[ch_id] = (slice(int(cells[0]), None, int(steps[0]))
+                            if np.all(steps == steps[0]) else cells)
+        per_record = {i: (self.data_words // w.step if isinstance(w, slice)
+                          else self.data_words // cycle * w.size) for i, w in where.items()}
+        out = {i: np.empty(self.n_records * per, dtype=np.int16) for i, per in per_record.items()}
         numbers = np.empty(self.n_records, dtype=np.int64)
         status = np.empty(self.n_records, dtype=np.int64)
         dtype = np.dtype([("hdr", f"{self.endian}u2", (self.header["header_size"] // 2,)),
@@ -352,10 +361,11 @@ class PFile:
                 numbers[done:done + k] = records["hdr"][:, WORD["record_number"]]
                 status[done:done + k] = records["hdr"][:, WORD["buffer_status"]]
                 data = records["data"]
-                for ch_id, (first, step) in where.items():
-                    per = self.data_words // step
-                    out[ch_id][done * per:(done + k) * per].reshape(k, per)[:] = \
-                        data[:, first::step]
+                for ch_id, w in where.items():
+                    per = per_record[ch_id]
+                    out[ch_id][done * per:(done + k) * per].reshape(k, per)[:] = (
+                        data[:, w] if isinstance(w, slice)
+                        else data.reshape(-1, cycle)[:, w].reshape(k, per))
                 done += k
         self._words.update(out)
         if not self._checked:
@@ -363,8 +373,10 @@ class PFile:
             self._checked = True
 
     def _check_record_headers(self, numbers: np.ndarray, status: np.ndarray) -> None:
-        steps = np.diff(numbers)
-        gaps = steps > 1
+        # The record number is one 16-bit word, so it wraps after 65,535 (a file
+        # of over 18 hours at one record per second); a step back is not a gap.
+        steps = np.diff(numbers) % 2**16
+        gaps = (steps > 1) & (steps < 2**15)
         if gaps.any():
             self.notes.append(f"{int(steps[gaps].sum() - gaps.sum())} record(s) are missing from"
                               " the file; later times are shifted earlier")

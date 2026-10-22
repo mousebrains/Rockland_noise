@@ -310,15 +310,21 @@ The P-file reader (`pfile.py`) follows Rockland's Technical Note 051 and the
 ODAS MATLAB library. It was checked sample for sample against
 [microstructure-tpw](https://github.com/mousebrains/turbulence)'s reader on 23
 files (MicroRiders and VMPs, formats 6.0–6.3, 512 and 1024 Hz, 32-bit channels,
-real bad-buffer runs). `tests/test_pfile.py` pins reference values from it for
-four small real files in `tests/data/`, a few records each: a MicroRider at
-format 6.3 and 512 Hz; a MicroRider at format 6.0 and 1024 Hz; a VMP with a
-32-bit channel (JAC_C), unsigned channels (JAC_T, Chlorophyll, Turbidity) and a
-real dropout; and a VMP with test probes on a ship's deck. The reader converts
-to physical units only pressure, thermistor, inclinometer and JAC_T channels;
-everything else stays in counts. It reads only the channels it needs, a few
-megabytes of the file at a time; analysing a 4-hour, 512 Hz file needs about
-230 MB of working data.
+real bad-buffer runs). The one difference is a channel that fills several cells
+of the address matrix, such as Gnd (2 to 6 spare cells per cycle on every
+instrument seen so far): like ODAS's `read_odas.m`, this reader reads every
+cell in the order sampled, at the matching rate, where microstructure-tpw keeps
+the first; Gnd agrees with `read_odas.m` on the four test files.
+`tests/test_pfile.py` pins reference values from microstructure-tpw (and, for
+Gnd, from `read_odas.m`) for four small real files in `tests/data/`, a few
+records each: a MicroRider at format 6.3 and 512 Hz; a MicroRider at format 6.0
+and 1024 Hz; a VMP with a 32-bit channel (JAC_C), unsigned channels (JAC_T,
+Chlorophyll, Turbidity) and a real dropout; and a VMP with test probes on a
+ship's deck. The reader converts to physical units only pressure, thermistor,
+inclinometer and JAC_T channels; everything else stays in counts. It reads only
+the channels it needs, a few megabytes of the file at a time; analysing a
+4-hour, 512 Hz file needs about 450 MB of memory at its peak, of which Python,
+numpy and scipy take about 100 MB.
 The other tests build small P-files from `tests/data/MR_SL435_template.p` with
 synthetic counts written into chosen channels. `tests/test_real_data.py` checks
 agreement with AEM1-G when the AEM1-G tank files are present
