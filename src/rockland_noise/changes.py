@@ -35,7 +35,17 @@ Unusual file
     One file that differs from the files on both sides of it, in the same
     direction, by at least ``min_factor`` squared (and by much more than the
     usual file-to-file scatter). The first and the most recent file are
-    compared with their one available side.
+    compared with their one available side. The caller can add a test of its
+    own (``check``): for spike ratios, that the file's spike counts are beyond
+    what chance gives for its length, so a short file with a few spikes is
+    not called unusual.
+
+Every file counts the same in the jump and trend search, however long it is.
+That is safe because the size of a jump is judged on the median of the files
+on each side, which a few noisy short files cannot move; files with less
+usable data than ``--min-minutes`` are left out altogether. The chances
+reported are approximate: the shuffle test and Kendall's test assume files
+are independent, and the allowance for similar neighbours is an estimate.
 
 Neighbouring files are usually alike, which makes a run of files look like
 stronger evidence than it is. So the chance of each jump and trend is worked
@@ -49,6 +59,7 @@ reported.
 
 import itertools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -67,6 +78,7 @@ class ChangeSettings:
     min_gap_days: float = 2.0  # ...and at least this long separates groups of files
     n_shuffles: int = 1999  # shuffles for the jump test
     seed: int = 20261021  # fixed, so the same files always give the same answer
+    unusual_alpha: float = 0.001  # for the caller's check of one unusual file (many are tested)
 
 
 @dataclass(slots=True)
@@ -333,7 +345,12 @@ def _find_trend(days: np.ndarray, y: np.ndarray, first: int, s: ChangeSettings,
                  days=float(days[-1] - days[0]), p_value=p)
 
 
-def _find_unusual(y: np.ndarray, s: ChangeSettings) -> list[Unusual]:
+# check(i, neighbours, higher): is file i's difference from those files (positions
+# in the series) beyond chance, given that it is higher (True) or lower?
+Check = Callable[[int, np.ndarray, bool], bool]
+
+
+def _find_unusual(y: np.ndarray, s: ChangeSettings, check: Check | None = None) -> list[Unusual]:
     if y.size < 4:
         return []
     steps = np.diff(y)
@@ -355,7 +372,14 @@ def _find_unusual(y: np.ndarray, s: ChangeSettings) -> list[Unusual]:
             d = float(y[i] - np.median(after))
             if abs(d) >= limit:
                 found.append(Unusual(i, d, "after"))
+    if check is not None:
+        found = [u for u in found if check(u.index, neighbours(u.index, y.size), u.difference > 0)]
     return found
+
+
+def neighbours(i: int, n: int) -> np.ndarray:
+    """Positions of the files an unusual file is compared with: up to 3 on each side."""
+    return np.r_[max(0, i - 3):i, i + 1:min(n, i + 4)]
 
 
 def time_groups(days: np.ndarray, s: ChangeSettings) -> list[tuple[int, int]]:
@@ -369,12 +393,13 @@ def time_groups(days: np.ndarray, s: ChangeSettings) -> list[tuple[int, int]]:
     return list(itertools.pairwise(edges))
 
 
-def find_changes(days: np.ndarray, y: np.ndarray,
-                 settings: ChangeSettings | None = None) -> Changes:
+def find_changes(days: np.ndarray, y: np.ndarray, settings: ChangeSettings | None = None,
+                 check: Check | None = None) -> Changes:
     """Look for jumps, trends and unusual files.
 
     ``days`` is each file's start time in days (any origin), oldest first;
-    ``y`` is log10 of the ratio for each file. Both must be finite.
+    ``y`` is log10 of the ratio for each file. Both must be finite. ``check``,
+    if given, must also agree before a file is called unusual.
     """
     s = settings or ChangeSettings()
     days, y = np.asarray(days, dtype=float), np.asarray(y, dtype=float)
@@ -385,7 +410,7 @@ def find_changes(days: np.ndarray, y: np.ndarray,
         out.segments = [(0, y.size)]
         return out
 
-    out.unusual = _find_unusual(y, s)
+    out.unusual = _find_unusual(y, s, check)
     # A single odd file must not make or hide a jump: for the jump search it is
     # replaced by the typical value of its neighbours.
     y_all = y
