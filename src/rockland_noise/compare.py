@@ -6,11 +6,13 @@ interrupted) does not have to read the file again. Then put the files in time
 order and look for jumps, trends and unusual files in the two ratios.
 """
 
+import functools
 import glob
 import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -32,7 +34,7 @@ from .spikes import ChannelResult, SpikeSettings, analyze_channel_many
 # channel has a few spikes per hour or fewer. (AEM1-G clipped rates at 1/h.)
 EXTRA_SPIKES_PER_HOUR = 1.0
 WILDCARDS = set("*?[")
-CACHE_FORMAT = 6  # bump when ChannelResult or its meaning changes, so old answers are not reused
+CACHE_ENTRY = re.compile(r"[0-9a-f]{64}\.(json|tmp)")  # the only files the cache writes
 
 
 def _version(package: str) -> str:
@@ -40,6 +42,21 @@ def _version(package: str) -> str:
         return version(package)
     except PackageNotFoundError:
         return "unknown"
+
+
+@functools.cache
+def code_fingerprint() -> str:
+    """A hash of this program's own source files.
+
+    Remembered answers are keyed on it, so any change to the code, released
+    or not, means files are analysed afresh rather than answered from an older
+    version's results.
+    """
+    h = hashlib.sha256()
+    for f in sorted(Path(__file__).parent.glob("*.py")):
+        h.update(f.name.encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
 
 
 @dataclass(slots=True)
@@ -190,9 +207,10 @@ class Cache:
     """One small JSON file per (P-file, channel, settings).
 
     The key includes the P-file's full path, size and modification time, so an
-    edited or replaced file is read again; and every setting that changes the
-    answer, plus the program versions, so changing an option never reuses an
-    old answer.
+    edited or replaced file is read again; every setting that changes the
+    answer, so changing an option never reuses an old answer; and a hash of
+    this program's source code plus the numpy and scipy versions, so a new
+    version of any of them never does either.
     """
 
     def __init__(self, directory: Path | None):
@@ -215,10 +233,29 @@ class Cache:
             "mtime_ns": st.st_mtime_ns,
             "channel": channel.casefold(),
             "settings": settings,
-            "format": CACHE_FORMAT,
-            "rockland-noise": _version("rockland-noise"),
+            "code": code_fingerprint(),
+            "numpy": _version("numpy"),
+            "scipy": _version("scipy"),
         }
         return hashlib.sha256(json.dumps(ident, sort_keys=True).encode()).hexdigest()
+
+    def clear(self) -> int:
+        """Forget every remembered answer; returns how many were removed.
+
+        Only the cache's own files (64 hex digits + .json) are touched, so a
+        --cache-dir pointed at a folder with other files in it is safe.
+        """
+        if self.directory is None:
+            return 0
+        removed = 0
+        for f in self.directory.iterdir():
+            if CACHE_ENTRY.fullmatch(f.name):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
 
     def get(self, key: str) -> dict | None:
         if self.directory is None:

@@ -2,8 +2,10 @@
 
 import math
 
-from rockland_noise.reader import Evidence
+from rockland_noise.reader import Evidence, read_channels
 from rockland_noise.setup import classify, run_mode
+
+from .conftest import DATA
 
 NAN = math.nan
 # Numbers like those measured on the MR433 tank bench tests (T_0 = 16.151 C).
@@ -39,7 +41,7 @@ def test_real_probes():
 
 
 def test_real_probes_in_water_at_the_reference_temperature_are_not_steady():
-    assert classify(with_(t1=16.0, t2=16.2, t1_spread=0.4, t2_spread=0.5)).probes == "real"
+    assert classify(with_(t1=16.15, t2=16.15, t1_spread=0.4, t2_spread=0.5)).probes == "real"
 
 
 def test_test_probes_on_a_deployed_instrument_is_not_a_bench_test():
@@ -68,7 +70,25 @@ def test_one_probe_missing():
 
 
 def test_a_faulty_test_probe_channel_is_still_a_test_probe():
-    assert classify(with_(t1_spread=0.2)).probes == "test"
+    """MR433's faulty T1 next to a healthy T2: up to 0.2 C off and 0.2 C unsteady."""
+    s = classify(with_(t1_spread=0.2))
+    assert s.probes == "test" and s.warnings[0].startswith("T1 is unsteady")
+    s = classify(with_(t1=16.35))
+    assert s.probes == "test" and s.warnings[0].startswith("T1 is steady but not at its")
+
+
+def test_real_probes_in_steady_water_near_the_reference_are_real():
+    """A real probe in a quiet tank or lab air near 16 C is not steady enough, or close enough."""
+    assert classify(with_(t1=16.0, t2=16.01, t1_spread=0.02, t2_spread=0.02)).probes == "real"
+    assert classify(with_(t1=16.12, t2=16.13, t1_spread=0.08, t2_spread=0.08)).probes == "real"
+
+
+def test_a_real_bench_test_on_a_ship():
+    """VMP SN 409 on the deck of the Ocean Hunter III (a cut of OH3409_0004.p)."""
+    data = read_channels(DATA / "VMP_SN409_deck.p", ["sh1"])
+    s = classify(data.evidence)
+    assert s.probes == "test" and s.bench and not s.warnings
+    assert "tilt varied" in s.detail and "shaking" in s.detail
 
 
 def test_without_pressure_tilt_and_shaking_decide():

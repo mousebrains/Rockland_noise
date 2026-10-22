@@ -149,6 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
                         f" (default {default_cache_dir()})")
     t.add_argument("--no-cache", action="store_true",
                    help="do not remember results; read every file every time")
+    t.add_argument("--clear-cache", action="store_true",
+                   help="forget every remembered result first, then run as usual")
 
     ch = sub.add_parser("channels", help="list the channel names in a P-file",
                         description="List the channels in a P-file, so you know what to compare.")
@@ -219,7 +221,11 @@ def run_compare(args: argparse.Namespace) -> int:
         print("Problem: no P-files to look at.", file=sys.stderr)
         return 1
 
-    cache = Cache(None if args.no_cache else (args.cache_dir or default_cache_dir()))
+    folder = args.cache_dir or default_cache_dir()
+    if args.clear_cache:
+        removed = Cache(folder).clear() if folder.is_dir() else 0
+        print(f"Forgot {removed} remembered result(s) in {folder}.", file=sys.stderr)
+    cache = Cache(None if args.no_cache else folder)
     if cache.warning:
         print(f"Note: {cache.warning}", file=sys.stderr)
     if not args.quiet:

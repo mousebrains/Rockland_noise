@@ -163,6 +163,7 @@ Run `rockland-noise explain` for the full plain-language guide.
 | `... could not be converted ..., so it was not used to tell a bench test from live data` (CSV notes) | A calibration coefficient in that file's setup is unreadable (for example `0,0687` with a comma). The two channels are still analysed; check the setup, or choose `--mode` yourself. |
 | `too little usable data, left out` | The file has less than a minute of usable data (change with `--min-minutes`). With `--min-pressure`, the instrument may never have gone that deep. |
 | A long run was stopped | Run the same command again. Finished files are remembered and not read again. |
+| The cache folder has grown large | Add `--clear-cache` once: it forgets every remembered result (only the cache's own files are removed). |
 | `rockland-noise: command not found` | Open a new terminal window after installing uv, or run `uv tool update-shell`. |
 
 ## 4. How it works (for the curious and for supervisors)
@@ -191,19 +192,31 @@ channel-files and 5% of the thermistor channel-files had at least one, and in
 39 of the 49 shear files with spikes both sh1 and sh2 had them. A ratio between
 the two channels is not fooled by spikes they share; the absolute counts are.
 
-**Bench or live** (`setup.py`), from 946 files of MicroRiders (SN 330, 429,
-433, 435, 533) and VMPs (SN 132, 142, 409, 465, 479):
+**Bench or live** (`setup.py`), chosen on 1,217 files of MicroRiders (SN 330,
+429, 433, 435, 533) and VMPs (SN 132, 142, 409, 428, 465, 479), and checked on
+458 held-out files from other deployments (it classified every one the same
+way as with the earlier, looser test-probe limits):
 
-* Bench thermistors read within 0.03 °C of their T₀ (99% of 324
-  channel-files; 0.2 °C at most, on MR433's faulty T1); none of 376
-  real-probe channel-files came within 0.5 °C of T₀ while steady. T₀ is
-  usually 16.15 °C but 7.88, 9.45, 14.27 and 16.96 °C also occur, so the test
-  is against each channel's own T₀, not a fixed temperature.
+* A test probe reads within 0.1 °C of its T₀, with the middle half of its
+  samples within 0.05 °C. Healthy test-probe channels were at most 0.043 °C
+  from T₀ with 0.017 °C spread (346 channel-files used to choose the limits),
+  and at most 0.030 °C and 0.010 °C on 220 channel-files that were held out
+  (TN441 and g3 gliders, Palau 2024 VMPs, REMUS, MicroRider SN 247, ...).
+  Real probes whose median came within 0.5 °C of T₀ (48 of 1,844
+  channel-files) spread over 0.75 °C or more. MR433's faulty T1 (up to
+  0.2 °C off) fails the test and is flagged, while T2 still marks those files
+  as bench tests. T₀ is usually 16.15 °C but 7.88, 9.45, 14.27 and 16.96 °C
+  also occur, so the test is against each channel's own T₀, not a fixed
+  temperature.
 * Bench tests read −0.9 to +0.7 dbar (sensor offsets, shallow test tank),
   with the middle half of the readings within 0.12 dbar, or 0.42 on the deck
   of the Ocean Hunter III (ARCTERX 2023 Wake). VMPs hung overnight at 2–5 m in
   that lagoon read 1.9 dbar or more; casts, including the Wake VMP casts made
-  with test probes, span tens of dbar.
+  with test probes, span tens of dbar. The pressure is taken as written in the
+  file, not relative to an in-air reading: a file hung at a few metres often
+  has no in-air reading to compare with. So an instrument whose pressure reads
+  more than about +1.2 dbar in air, or a test tank deeper than about a metre,
+  is called live; use `--mode bench` then.
 * Real probes follow JAC_T (rank correlation ≥ 0.52, median 1.00) whenever
   the water temperature varies by more than 2 °C. Incl_T, the housing
   temperature, lags the water too much to help (correlation about 0 on VMP
@@ -241,6 +254,9 @@ the onset of MR435's T2 fault at file A685_0158 (2023-06-12 17:17 UTC, T2 about
 
 Results are remembered per file, channel and setting in a cache folder (shown by
 `rockland-noise compare --help`), so a second run, or one that was interrupted, is fast.
+They are keyed on the file (path, size, time it was changed), every setting, and
+a fingerprint of this program's own code, so after an upgrade, or any change to
+the code, files are analysed afresh. `--clear-cache` forgets everything remembered.
 
 ## 5. For developers
 

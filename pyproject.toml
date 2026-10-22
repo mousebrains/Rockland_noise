@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rockland-noise"
-version = "0.1.0"
+version = "0.2.0"
 description = "Compare spikes and noise between two channels across a set of Rockland Scientific P-files, and point out jumps and trends"
 requires-python = ">=3.13"
 license = "GPL-3.0-or-later"

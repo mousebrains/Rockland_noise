@@ -127,6 +127,30 @@ def test_second_run_uses_the_cache_and_new_settings_do_not(maker, tmp_path, caps
     assert "remembered" not in err
 
 
+def test_new_code_never_reuses_old_answers(maker, tmp_path, capsys, cache, monkeypatch):
+    from rockland_noise import compare
+
+    write_set(maker, tmp_path / "data", [0, 2])
+    args = ["compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache]
+    run(capsys, *args)
+    monkeypatch.setattr(compare, "code_fingerprint", lambda: "a different version")
+    _, _, err = run(capsys, *args)
+    assert "remembered" not in err
+
+
+def test_clear_cache(maker, tmp_path, capsys, cache):
+    write_set(maker, tmp_path / "data", [0, 2])
+    args = ["compare", "T1_dT1", "T2_dT2", tmp_path / "data", *cache]
+    run(capsys, *args)
+    keep = tmp_path / "cache" / "my notes.txt"
+    keep.write_text("not the cache's")
+    _, _, err = run(capsys, *args, "--clear-cache")
+    assert "Forgot 8 remembered result(s)" in err and "remembered from" not in err  # 2 x 2 x 2
+    assert keep.exists()
+    _, _, err = run(capsys, *args)
+    assert err.count("remembered from an earlier run") == 2
+
+
 def test_min_pressure_uses_only_deep_data(maker, tmp_path, capsys, cache):
     """P is above 20 dbar for the second half only; only those spikes count."""
     cal = maker.pf.setup("P").params
