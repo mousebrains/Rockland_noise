@@ -155,6 +155,10 @@ Rockland Bench Test Review Checklist (V3): items about these two channels
 * **Live data**: a real probe's spikes and noise include real signal from the
   water. When both channels' noise rises together around a change, the report
   says so: the water or the vehicle changed, not one channel.
+* **Channels that could not be measured**: a channel with no probe connected,
+  one stuck at the end of its range (railed), or one that does not move at all
+  cannot show a spike, so its zero would make it look like the clean channel.
+  The report names those files and leaves them out of the comparison.
 
 Run `rockland-noise explain` for the full plain-language guide.
 
@@ -189,6 +193,21 @@ Run `rockland-noise explain` for the full plain-language guide.
    within 0.1 s merge.
 4. Usable samples: after `--skip-start`, deeper than `--min-pressure` if given,
    and never the samples the logger marked as bad buffers.
+
+**Channels that could not be measured** (`health.py`): a file is left out of
+the comparison when either channel had no probe (the slow thermistor channel
+reads beyond any water temperature, as setup.py's test already used), was
+railed (at least 2% of its samples at the end of its range, or a spike
+threshold over half its range), or was flat (no change at all, or a fast
+thermistor channel under 1 count of noise). Chosen on 12,824 channel-files of
+T1_dT1, T2_dT2, sh1 and sh2 in 3,206 whole files: thermistor channels with a
+probe never went below 2.2 counts of noise, nor did any look dead while its
+slow channel read a temperature; glider and mooring MicroRiders were at the
+end of their range in at most 1.0% of the samples, while railed VMP shear
+channels reached 3–19%. On Hydrographer MR330, whose T2 probe stopped at file
+107, this replaces a "925× jump" that blamed T1 with "T2_dT2: no probe in 101
+files". A healthy, quiet shear channel can move by only 2 counts in a few
+minutes (VMP SN 132), so how little a shear channel moves is not used.
 
 This is the rule used for the MR433 T1 fault in the AEM1-G project. With
 `--threshold-counts 23.7 --skip-start 600` it reproduces the AEM1-G counts file

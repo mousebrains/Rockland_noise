@@ -147,6 +147,11 @@ def plot(cmp: Comparison, path: Path) -> None:
     fig, axes = plt.subplots(4, 1, figsize=(11, 10.5), sharex=True,
                              gridspec_kw={"hspace": 0.28})
     fig.patch.set_facecolor(SURFACE)
+    # Every readable file has a place, including those left out. Set first, so
+    # labels placed in screen units below see the final axis.
+    last = max(x[-1], sum(not f.error for f in cmp.files))
+    span = last - x[0] + 1
+    axes[-1].set_xlim(x[0] - 0.8, last + max(2.5, 0.08 * span))
     for ax in axes:
         _style(ax)
 
@@ -200,23 +205,41 @@ def plot(cmp: Comparison, path: Path) -> None:
         gap = (files[g0].start - files[g0 - 1].start).total_seconds() / 86400
         for ax in axes:
             ax.axvline(xg, color=MUTED, linewidth=0.8, zorder=1)
-        axes[0].annotate(f"{gap:.0f} days\nwithout files", (xg, 0), xytext=(3, 3),
+        between = "files" if x[g0] - x[g0 - 1] == 1 else "files compared"
+        axes[0].annotate(f"{gap:.0f} days\nwithout {between}", (xg, 0), xytext=(3, 3),
                          textcoords="offset points", fontsize=7, color=MUTED)
 
-    # x-axis: report row number, with dates for a few files
-    step = max(1, int(np.ceil(len(x) / 10)))
-    ticks = list(range(0, len(x), step))
+    # Files left out because a channel could not be measured: a pale band
+    # over each run of them, so the lines drawn across are not mistaken for data.
+    left_out = [i + 1 for i, f in enumerate(cmp.files) if f.problems]
+    runs: list[list[int]] = []
+    for n in left_out:
+        if runs and n == runs[-1][-1] + 1:
+            runs[-1].append(n)
+        else:
+            runs.append([n])
+    for run in runs:
+        for ax in axes:
+            ax.axvspan(run[0] - 0.5, run[-1] + 0.5, color=GRID, alpha=0.6, linewidth=0,
+                       zorder=0)
+
+    # x-axis: report row number, with dates for about 10 files, evenly spread
+    # (the rows are not evenly spaced when files were left out)
+    ticks: list[int] = []
+    for i, xi in enumerate(x):
+        if not ticks or xi - x[ticks[-1]] >= span / 10:
+            ticks.append(i)
     axes[-1].set_xticks(x[ticks])
     axes[-1].set_xticklabels([f"#{int(x[i])}\n{files[i].start:%Y-%m-%d}\n{files[i].start:%H:%M}"
                               for i in ticks], fontsize=7, color=INK_2)
     axes[-1].set_xlabel("file (# as in the report table), start time UTC", fontsize=8,
                         color=INK_2)
-    axes[-1].set_xlim(x[0] - 0.8, x[-1] + max(2.5, 0.08 * len(x)))
 
     inst = ", ".join(cmp.instruments) or "unknown instrument"
     fig.suptitle(f"{a} vs {b}  |  {inst}  |  {cmp.mode} mode  |  {len(rows)} files",
                  fontsize=11, color=INK, x=0.06, ha="left", y=0.955)
     fig.text(0.06, 0.925, "Vertical rule = jump, black line = trend, ring = unusual file."
-             " Ratios above 1 mean channel A is higher.", fontsize=8, color=INK_2)
+             + (" Pale band = files left out (a channel could not be measured)." if runs else "")
+             + " Ratios above 1 mean channel A is higher.", fontsize=8, color=INK_2)
     fig.savefig(path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
     plt.close(fig)

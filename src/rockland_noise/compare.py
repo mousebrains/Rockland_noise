@@ -24,6 +24,7 @@ import numpy as np
 from scipy.stats import poisson
 
 from .changes import Changes, ChangeSettings, find_changes
+from .health import Problem, problem
 from .reader import ChannelNotFoundError, Evidence, NoPressureError, PFileReadError, read_channels
 from .setup import Setup, classify, run_mode
 from .spikes import (
@@ -95,6 +96,8 @@ class FileResult:
     error: str = ""
     notes: list[str] = field(default_factory=list)
     from_cache: bool = False
+    # Channels that could not be measured in this file ("a", "b" -> why); see health.py
+    problems: dict[str, Problem] = field(default_factory=dict)
 
     @property
     def setup(self) -> Setup | None:
@@ -432,9 +435,15 @@ def compare(paths: list[Path], channel_a: str, channel_b: str, options: Options,
             reason += f"; but the files look like {detected}: {why}"
     for r in good:
         r.a, r.b = r.by_mode[mode]
+        if r.usable_s >= options.min_usable_s:  # a few samples are too few to judge
+            setup = r.setup
+            r.problems = {slot: p for slot, ch in (("a", r.a), ("b", r.b))
+                          if (p := problem(ch, setup)) is not None}
 
+    # A file where either channel could not be measured is left out: its
+    # spike and noise ratios would compare a channel with a broken one.
     used = [i for i, r in enumerate(files)
-            if not r.error and r.usable_s >= options.min_usable_s
+            if not r.error and r.usable_s >= options.min_usable_s and not r.problems
             and math.isfinite(r.spike_ratio_log)]
     noise_used = [i for i in used if math.isfinite(files[i].noise_ratio_log)]
     spikes = find_changes(_days(files, used),

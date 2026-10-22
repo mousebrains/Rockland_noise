@@ -52,7 +52,7 @@ file does not count.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .reader import Evidence
 
@@ -76,6 +76,8 @@ class Setup:
     steady: bool | None  # at the surface, pressure steady; None when nothing tells
     detail: str  # the evidence in a few words
     warnings: tuple[str, ...] = ()  # e.g. a temperature channel that looks faulty
+    # Thermistor channels with nothing connected: name -> the out-of-range reading, deg C
+    no_probe: dict[str, float] = field(default_factory=dict)
 
     @property
     def bench(self) -> bool:
@@ -148,10 +150,13 @@ def classify(ev: Evidence) -> Setup:
     else:
         steady = None
 
-    temps = ", ".join(f"{name} {t:.2f} C" for name, t in (("T1", ev.t1), ("T2", ev.t2))
+    no_probe = {name: t for (name, k, _), t in zip(channels, (ev.t1, ev.t2), strict=True)
+                if k == "none"}
+    temps = ", ".join(f"{name} no probe ({t:.2f} C is out of range)" if name in no_probe
+                      else f"{name} {t:.2f} C" for name, t in (("T1", ev.t1), ("T2", ev.t2))
                       if not math.isnan(t))
     return Setup(probes, steady, "; ".join(([temps] if temps else []) + context),
-                 tuple(warnings))
+                 tuple(warnings), no_probe)
 
 
 def run_mode(setups: list[Setup]) -> tuple[str, str]:

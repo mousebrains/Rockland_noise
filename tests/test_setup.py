@@ -67,6 +67,9 @@ def test_one_probe_missing():
     """VMP SN465: T1 had no probe (reads -17.09 C), T2 a test probe."""
     s = classify(with_(t1=-17.09, t1_spread=0.0))
     assert s.probes == "test" and s.bench
+    assert s.no_probe == {"T1": -17.09}
+    assert s.detail.startswith("T1 no probe (-17.09 C is out of range), T2 16.13 C")
+    assert classify(BENCH).no_probe == {}
 
 
 def test_a_faulty_test_probe_channel_is_still_a_test_probe():
