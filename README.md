@@ -176,10 +176,15 @@ Run `rockland-noise explain` for the full plain-language guide.
 
 This is the rule used for the MR433 T1 fault in the AEM1-G project. With
 `--threshold-counts 23.7 --skip-start 600` it reproduces the AEM1-G counts file
-for file (see `tests/test_real_data.py`). The bench threshold rests on
-measurement: on healthy MR433, MR435 and MR533 channels, in 4-hour bench tests
-(in a tank and on a patio, all with test probes), the largest excursion was
-5.0–5.9 × the noise, as expected for Gaussian noise, and never 6.
+for file (see `tests/test_real_data.py`). The bench threshold: in quiet
+stretches the largest excursion of a healthy channel in a 4-hour file is about
+5.4 × the noise (median over 600 healthy channel-files in 163 bench tests of
+MR433, MR435 and MR533), as expected for Gaussian noise, so 6 × gives about one
+false spike per 250 hours of pure electronic noise. Real bench sessions also
+have mechanical spikes from handling and vibration: 27% of the healthy shear
+channel-files and 5% of the thermistor channel-files had at least one, and in
+39 of the 49 shear files with spikes both sh1 and sh2 had them. A ratio between
+the two channels is not fooled by spikes they share; the absolute counts are.
 
 **Bench or live** (`setup.py`), from 946 files of MicroRiders (SN 330, 429,
 433, 435, 533) and VMPs (SN 132, 142, 409, 465, 479):

@@ -39,7 +39,7 @@ def test_same_counts_as_aem1g(name, t1, t2):
 
 
 def test_healthy_channels_have_no_bench_spikes():
-    """The basis of the bench threshold: a clean channel never reaches 6 x its noise."""
+    """In a quiet 4-hour bench file, healthy channels never reach 6 x their noise."""
     data = read_channels(TANK / "RIOT_SL684_0511.p", ["T2_dT2", "sh1", "sh2"], skip_start_s=600)
     for c in data.channels.values():
         r = analyze_channel(c.name, c.counts, c.fs, c.usable, MODES["bench"], bad=c.bad)

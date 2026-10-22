@@ -45,11 +45,13 @@ class SpikeSettings:
 # The two kinds of data, and the settings that suit each.
 #
 # bench: test probes (open-circuit shear, fixed-resistor temperature), so the
-#   signal is only the electronics' own noise. In 4-hour bench tests of
-#   MR433/MR435/MR533 (in a tank and on a patio, all with test probes) the
-#   largest excursion of a healthy channel was 5.0 to 5.9 times the noise, as
-#   expected for well-behaved noise, and none reached 6. Expected false spikes
-#   at 6 times the noise: about 1 every 250 hours.
+#   signal is mostly the electronics' own noise. In quiet stretches of 4-hour
+#   bench tests of MR433/MR435/MR533 the largest excursion of a healthy channel
+#   is about 5.4 times the noise (median of 600 channel-files), as expected for
+#   well-behaved noise; at 6 times, pure noise gives about 1 false spike every
+#   250 hours. Handling and vibration still make real mechanical spikes,
+#   mostly on both shear channels at once (27% of healthy shear channel-files
+#   had at least one, 5% of thermistor channel-files).
 # live: real probes, which also see the water (turbulence, plankton,
 #   vibration). Real signal has more big excursions, so the threshold is the
 #   AEM1-G value of 8 times the noise, and at least 10 counts.
